@@ -500,6 +500,11 @@ async def upload_file(file: UploadFile = File(...), background_tasks: Background
     table_name = load_dataframe_to_sql(df, os.path.splitext(filename)[0])
     # record uploaded file mapping
     UPLOADED_FILES[filename] = table_name
+    # ensure indexing status is present so the UI shows progress/finished even when CHROMA is not available
+    try:
+        INDEXING_STATUS[filename] = {"status": "indexing", "started": datetime.datetime.now().isoformat(), "progress": 0.0, "message": ""}
+    except Exception:
+        pass
     # schedule chroma indexing in background (threaded function)
     try:
         if CHROMA_AVAILABLE:
@@ -510,6 +515,18 @@ async def upload_file(file: UploadFile = File(...), background_tasks: Background
                     pass
             t = threading.Thread(target=_index, daemon=True)
             t.start()
+        else:
+            # If chroma isn't available, mark indexing as done immediately (we still loaded into SQL)
+            try:
+                rows = len(df)
+                chunk = int(os.environ.get("RAG_CHUNK_ROWS", "8"))
+                docs = max(1, math.ceil(rows / chunk))
+                INDEXING_STATUS[filename]["progress"] = 1.0
+                INDEXING_STATUS[filename]["status"] = "done"
+                INDEXING_STATUS[filename]["finished"] = datetime.datetime.now().isoformat()
+                INDEXING_STATUS[filename]["count"] = docs
+            except Exception:
+                pass
     except Exception:
         pass
 

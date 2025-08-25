@@ -7,19 +7,26 @@
   <title>HR Data Chat</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    /* soft animated gradient background */
+    /* stronger, more visible animated gradient background */
     body {
       min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
-      background: linear-gradient(120deg, #f5f7fa 0%, #eef6f9 40%, #f9f7ff 60%, #f6f9ff 100%);
-      background-size: 200% 200%;
-      animation: bgmove 12s ease infinite;
+      /* higher-contrast color stops for a more visible animation */
+      background: linear-gradient(120deg, #ff9a9e 0%, #fad0c4 25%, #fbc2eb 55%, #a6c1ee 100%);
+      /* enlarge background to accentuate movement */
+      background-size: 300% 300%;
+      /* faster and linear movement so the shift is more noticeable */
+      animation: bgmove 8s linear infinite;
+      /* slight saturation boost */
+      filter: saturate(1.05);
     }
     @keyframes bgmove {
       0% { background-position: 0% 50%; }
+      25% { background-position: 50% 30%; }
       50% { background-position: 100% 50%; }
+      75% { background-position: 50% 70%; }
       100% { background-position: 0% 50%; }
     }
     .glass { background: rgba(255,255,255,0.9); backdrop-filter: blur(8px); box-shadow: 0 10px 30px rgba(16,24,40,0.08); border: 1px solid rgba(15,23,42,0.04); }
@@ -176,10 +183,16 @@ async function loadFiles() {
     const res = await fetch('/files');
     const data = await res.json();
     filesList.innerHTML = '';
+    // helper to sanitize filename into a safe DOM id
+    function safeId(name){
+      return name.replace(/[^\w\d]/g, '_');
+    }
+
     data.files.forEach(f=>{
       const el = document.createElement('div');
   el.className = 'p-2 border rounded flex flex-col gap-2';
-  el.innerHTML = `<div class="flex items-center justify-between"><div><div class="font-medium">${f.filename}</div><div class="text-xs text-slate-500">table: ${f.table}</div></div></div><div class="w-full bg-slate-100 rounded h-2 overflow-hidden"><div id="bar-${f.filename}" class="h-2 bg-emerald-400" style="width:0%"></div></div>`;
+  const fid = safeId(f.filename);
+  el.innerHTML = `<div class="flex items-center justify-between"><div><div class="font-medium">${f.filename}</div><div class="text-xs text-slate-500">table: ${f.table}</div></div></div><div class="w-full bg-slate-100 rounded h-2 overflow-hidden"><div id="bar-${fid}" class="h-2 bg-emerald-400" style="width:0%"></div></div>`;
       const actions = document.createElement('div');
       // delete button
       const del = document.createElement('button');
@@ -221,16 +234,17 @@ async function loadFiles() {
           anyIndexing = true;
         }
         // when just finished, push to activity feed and show toast
-        if (info.status === 'done' && !document.getElementById('act-'+fname)){
+        const safe = safeId(fname);
+        if (info.status === 'done' && !document.getElementById('act-'+safe)){
           const feedItem = document.createElement('div');
-          feedItem.id = 'act-'+fname;
+          feedItem.id = 'act-'+safe;
           feedItem.innerHTML = `<div class="font-medium text-slate-700">Indexed ${fname}</div><div class="text-xs text-slate-500">Finished: ${info.finished || ''} • ${info.count||0} docs</div>`;
           activityFeed.prepend(feedItem);
           toast(`Indexing finished: ${fname}`);
         }
-        if (info.status === 'error' && !document.getElementById('act-'+fname+'-err')){
+        if (info.status === 'error' && !document.getElementById('act-'+safe+'-err')){
           const feedItem = document.createElement('div');
-          feedItem.id = 'act-'+fname+'-err';
+          feedItem.id = 'act-'+safe+'-err';
           feedItem.innerHTML = `<div class="font-medium text-rose-600">Index error: ${fname}</div><div class="text-xs text-slate-500">${info.message || 'error'}</div>`;
           activityFeed.prepend(feedItem);
           toast(`Indexing error: ${fname}`);
