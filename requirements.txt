@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pandas
+ollama
+langchain>=0.3.27
+langchain-community
+langchain-ollama
+chromadb
+sentence-transformers
+sqlparse

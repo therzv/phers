@@ -1,0 +1,362 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>HR Data Chat</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* soft animated gradient background */
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(120deg, #f5f7fa 0%, #eef6f9 40%, #f9f7ff 60%, #f6f9ff 100%);
+      background-size: 200% 200%;
+      animation: bgmove 12s ease infinite;
+    }
+    @keyframes bgmove {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+    .glass { background: rgba(255,255,255,0.9); backdrop-filter: blur(8px); box-shadow: 0 10px 30px rgba(16,24,40,0.08); border: 1px solid rgba(15,23,42,0.04); }
+    /* floating effect for panels */
+    .panel-floating { transform: translateY(0); transition: transform 0.24s ease, box-shadow 0.24s ease; }
+    .panel-floating:hover { transform: translateY(-8px); box-shadow: 0 18px 40px rgba(16,24,40,0.12); }
+    @media (prefers-reduced-motion: reduce) {
+      body { animation: none; }
+      .panel-floating { transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="w-full max-w-6xl p-6">
+    <div class="flex items-center justify-end mb-3">
+      <div id="globalIndex" class="text-sm text-slate-600">Index: idle</div>
+    </div>
+    <div class="grid grid-cols-3 gap-6">
+      <!-- Left: upload & files -->
+      <div class="col-span-1 glass rounded-xl p-5 shadow">
+        <h2 class="text-lg font-semibold mb-3">Documents</h2>
+        <div class="mb-3">
+          <input id="fileInput" type="file" accept=".csv,.xlsx,.xls" class="block w-full text-sm text-slate-600" multiple />
+          <div class="flex mt-2 gap-2">
+            <button id="uploadBtn" class="flex-1 bg-indigo-600 text-white px-3 py-2 rounded">Upload</button>
+            <button id="refreshFiles" class="px-3 py-2 border rounded">Refresh</button>
+          </div>
+          <p id="uploadStatus" class="text-xs text-slate-500 mt-2"></p>
+        </div>
+
+        <div>
+          <h3 class="text-sm font-medium mb-2">Uploaded</h3>
+          <div id="filesList" class="space-y-2 max-h-40 overflow-auto text-sm"></div>
+        </div>
+        <div class="mt-4">
+          <h3 class="text-sm font-medium mb-2">Activity</h3>
+          <div id="activityFeed" class="space-y-2 max-h-40 overflow-auto text-sm text-slate-600 p-2 bg-white rounded"></div>
+        </div>
+        <!-- chooser for ambiguous file matches -->
+        <div id="chooser" class="mt-3 hidden">
+          <div class="text-sm font-medium mb-2">Which file did you mean?</div>
+          <div id="chooserList" class="space-y-2 text-sm"></div>
+        </div>
+      </div>
+
+      <!-- Middle: chat -->
+  <div class="col-span-2 glass rounded-xl p-5 shadow flex flex-col">
+        <div class="flex items-center justify-between mb-4">
+          <h1 class="text-2xl font-bold">HR Data Chat</h1>
+          <div class="text-sm text-slate-500">Ask in natural language — answers based on uploaded documents</div>
+        </div>
+
+        <div id="chat" class="flex-1 overflow-auto p-4 space-y-3 bg-gradient-to-b from-white to-slate-50 rounded border"></div>
+
+        <form id="form" class="mt-4 flex gap-2">
+          <input id="input" type="text" placeholder="Ask about headcount, assets, or people..." class="flex-1 px-4 py-3 rounded border" />
+          <button type="submit" class="bg-emerald-600 text-white px-4 py-3 rounded">Send</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  
+  <!-- SQL Preview Modal -->
+  <div id="sqlModal" class="fixed inset-0 hidden items-center justify-center z-50">
+    <div class="absolute inset-0 bg-black opacity-40"></div>
+    <div class="bg-white rounded-lg p-4 z-50 w-11/12 max-w-2xl panel-floating">
+      <h3 class="font-semibold mb-2">Generated SQL (preview)</h3>
+      <pre id="sqlText" class="bg-slate-50 p-3 rounded text-xs max-h-48 overflow-auto"></pre>
+      <div id="sqlSuggestions" class="text-sm text-slate-600 mt-2"></div>
+      <div id="sqlInferred" class="text-sm text-slate-600 mt-2"></div>
+      <div class="mt-4 flex gap-2 justify-end">
+        <button id="cancelSql" class="px-3 py-2 border rounded">Cancel</button>
+        <button id="runSql" class="px-3 py-2 bg-emerald-600 text-white rounded">Run SQL</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+const chatEl = document.getElementById("chat");
+const form = document.getElementById("form");
+const input = document.getElementById("input");
+const uploadBtn = document.getElementById("uploadBtn");
+const fileInput = document.getElementById("fileInput");
+const uploadStatus = document.getElementById("uploadStatus");
+  const filesList = document.getElementById("filesList");
+  const globalIndex = document.getElementById('globalIndex');
+  const chooser = document.getElementById('chooser');
+const refreshFiles = document.getElementById("refreshFiles");
+const sqlModal = document.getElementById('sqlModal');
+const sqlText = document.getElementById('sqlText');
+const sqlSuggestions = document.getElementById('sqlSuggestions');
+const sqlInferred = document.getElementById('sqlInferred');
+const cancelSql = document.getElementById('cancelSql');
+const runSql = document.getElementById('runSql');
+const chooserList = document.getElementById('chooserList');
+const activityFeed = document.getElementById('activityFeed');
+
+function toast(msg){
+  const t = document.createElement('div');
+  t.className = 'fixed right-6 bottom-6 bg-white p-3 rounded shadow panel-floating text-sm';
+  t.innerText = msg;
+  document.body.appendChild(t);
+  setTimeout(()=>{ t.style.opacity = '0'; setTimeout(()=>t.remove(), 350); }, 4000);
+}
+
+function addMessage(role, text, tablePreview) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "flex " + (role === "user" ? "justify-end" : "justify-start");
+  const bubble = document.createElement("div");
+  bubble.className = (role === "user" ? "bg-indigo-600 text-white" : "bg-white border") + " px-4 py-2 rounded-lg max-w-3xl";
+  bubble.innerText = text;
+  wrapper.appendChild(bubble);
+  if (tablePreview && tablePreview.length) {
+    const table = document.createElement("div");
+    table.className = "mt-2 overflow-auto text-xs bg-slate-50 border p-2 rounded";
+    const keys = Object.keys(tablePreview[0] || {});
+    if (keys.length) {
+      const t = document.createElement("table");
+      t.className = "min-w-full border-collapse text-left text-xs";
+      const thead = document.createElement("thead");
+      const trh = document.createElement("tr");
+      keys.forEach(k=>{
+        const th = document.createElement("th");
+        th.innerText = k;
+        th.className = "px-2 py-1 text-slate-600";
+        trh.appendChild(th);
+      });
+      thead.appendChild(trh);
+      t.appendChild(thead);
+      const tbody = document.createElement("tbody");
+      tablePreview.forEach(row=>{
+        const tr = document.createElement("tr");
+        keys.forEach(k=>{
+          const td = document.createElement("td");
+          td.innerText = row[k] ?? "";
+          td.className = "px-2 py-1";
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      t.appendChild(tbody);
+      table.appendChild(t);
+    } else {
+      table.innerText = JSON.stringify(tablePreview, null, 2);
+    }
+    wrapper.appendChild(table);
+  }
+  chatEl.appendChild(wrapper);
+  chatEl.scrollTop = chatEl.scrollHeight;
+}
+
+async function loadFiles() {
+  try {
+    const res = await fetch('/files');
+    const data = await res.json();
+    filesList.innerHTML = '';
+    data.files.forEach(f=>{
+      const el = document.createElement('div');
+  el.className = 'p-2 border rounded flex flex-col gap-2';
+  el.innerHTML = `<div class="flex items-center justify-between"><div><div class="font-medium">${f.filename}</div><div class="text-xs text-slate-500">table: ${f.table}</div></div></div><div class="w-full bg-slate-100 rounded h-2 overflow-hidden"><div id="bar-${f.filename}" class="h-2 bg-emerald-400" style="width:0%"></div></div>`;
+      const actions = document.createElement('div');
+      // delete button
+      const del = document.createElement('button');
+      del.className = 'text-red-600 px-2 py-1 rounded border';
+      del.innerText = 'Delete';
+      del.addEventListener('click', async ()=>{
+        if (!confirm(`Delete ${f.filename}? This removes the file, its SQL table, and any RAG entries.`)) return;
+        try {
+          const res = await fetch(`/files/${encodeURIComponent(f.filename)}`, { method: 'DELETE' });
+          if (res.ok) {
+            await loadFiles();
+          } else {
+            const data = await res.json();
+            alert('Delete failed: ' + (data.detail || JSON.stringify(data)));
+          }
+        } catch (e) {
+          alert('Delete request failed: ' + e);
+        }
+      });
+      actions.appendChild(del);
+      el.appendChild(actions);
+      filesList.appendChild(el);
+    });
+    // then fetch indexing statuses and update badges
+    try{
+      const st = await fetch('/index_status');
+      const js = await st.json();
+      const s = js.status || {};
+      let anyIndexing = false;
+      Object.keys(s).forEach(fname=>{
+        const info = s[fname];
+        if (!info) return;
+        const progress = Math.round((info.progress || 0)*100);
+        const bar = document.getElementById('bar-'+fname);
+        if (bar) {
+          bar.style.width = `${progress}%`;
+        }
+        if (info.status === 'indexing'){
+          anyIndexing = true;
+        }
+        // when just finished, push to activity feed and show toast
+        if (info.status === 'done' && !document.getElementById('act-'+fname)){
+          const feedItem = document.createElement('div');
+          feedItem.id = 'act-'+fname;
+          feedItem.innerHTML = `<div class="font-medium text-slate-700">Indexed ${fname}</div><div class="text-xs text-slate-500">Finished: ${info.finished || ''} • ${info.count||0} docs</div>`;
+          activityFeed.prepend(feedItem);
+          toast(`Indexing finished: ${fname}`);
+        }
+        if (info.status === 'error' && !document.getElementById('act-'+fname+'-err')){
+          const feedItem = document.createElement('div');
+          feedItem.id = 'act-'+fname+'-err';
+          feedItem.innerHTML = `<div class="font-medium text-rose-600">Index error: ${fname}</div><div class="text-xs text-slate-500">${info.message || 'error'}</div>`;
+          activityFeed.prepend(feedItem);
+          toast(`Indexing error: ${fname}`);
+        }
+      })
+      globalIndex.innerText = anyIndexing ? 'Indexing in progress...' : 'Index: idle';
+    }catch(e){/* ignore */}
+  } catch (e) {
+    filesList.innerText = 'Failed to load files';
+  }
+}
+
+// poll indexing status periodically
+setInterval(()=>{ loadFiles(); }, 6000);
+
+uploadBtn.addEventListener('click', async ()=>{
+  const files = fileInput.files;
+  if (!files || !files.length) {
+    uploadStatus.innerText = 'Choose at least one file.';
+    return;
+  }
+  uploadStatus.innerText = 'Uploading...';
+  for (let i=0;i<files.length;i++){
+    const fd = new FormData();
+    fd.append('file', files[i]);
+    try {
+      const res = await fetch('/upload', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (res.ok) {
+        uploadStatus.innerText = `Uploaded: ${files[i].name}`;
+      } else {
+        uploadStatus.innerText = 'Upload error: ' + (data.detail || JSON.stringify(data));
+      }
+    } catch (e) {
+      uploadStatus.innerText = 'Upload failed: ' + e;
+    }
+  }
+  await loadFiles();
+});
+
+refreshFiles.addEventListener('click', loadFiles);
+
+form.addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const q = input.value.trim();
+  if (!q) return;
+  addMessage('user', q);
+  input.value = '';
+  addMessage('assistant', 'Generating SQL preview...');
+  try {
+    const res = await fetch('/chat', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ question: q }) });
+    const data = await res.json();
+    if (!res.ok) {
+      addMessage('assistant', 'Error: ' + (data.detail || JSON.stringify(data)));
+      return;
+    }
+    // if no inferred tables and no suggestions, ask server for candidate files when ambiguous
+    if ((!data.inferred_tables || !data.inferred_tables.length)){
+      try{
+        const pick = await fetch('/choose_file', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ question: q }) });
+        const pickRes = await pick.json();
+        if (pick.ok === false || !pickRes.candidates) {
+          // ignore
+        } else {
+          const cand = pickRes.candidates || [];
+          if (cand.length>1 && Math.abs((cand[0].score||0)-(cand[1].score||0)) < 0.6){
+            // ambiguous — show chooser UI
+            chooserList.innerHTML='';
+            cand.forEach(c=>{
+              const el = document.createElement('div');
+              el.className='p-2 border rounded flex items-center justify-between';
+              el.innerHTML = `<div><div class="font-medium">${c.filename}</div><div class="text-xs text-slate-500">table: ${c.table}</div></div>`
+              const btn = document.createElement('button');
+              btn.className='px-2 py-1 bg-indigo-600 text-white rounded';
+              btn.innerText='Use this file';
+              btn.addEventListener('click', ()=>{
+                chooser.classList.add('hidden');
+                // prefill question including explicit file hint and re-run preview flow
+                const newQ = q + ` in file ${c.filename}`;
+                input.value = newQ;
+                form.dispatchEvent(new Event('submit'));
+              });
+              el.appendChild(btn);
+              chooserList.appendChild(el);
+            });
+            chooser.classList.remove('hidden');
+            return; // stop preview modal from showing; user will re-submit via chooser
+          }
+        }
+      }catch(e){/*ignore chooser errors*/}
+    }
+
+    // show SQL preview modal
+    sqlText.innerText = data.sql || '';
+    sqlSuggestions.innerText = data.suggestions && data.suggestions.length ? ('Suggestions: ' + data.suggestions.join(' | ')) : '';
+    sqlInferred.innerText = data.inferred_tables && data.inferred_tables.length ? ('Likely tables: ' + data.inferred_tables.join(', ')) : '';
+    sqlModal.classList.remove('hidden');
+    // attach run handler (one-time)
+    const runHandler = async ()=>{
+      sqlModal.classList.add('hidden');
+      addMessage('assistant', 'Running SQL...');
+      try {
+        const r2 = await fetch('/execute_sql', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ sql: data.sql, question: q }) });
+        const res2 = await r2.json();
+        if (!r2.ok) {
+          addMessage('assistant', 'Execution error: ' + (res2.detail || JSON.stringify(res2)));
+        } else {
+          addMessage('assistant', res2.summary || 'No summary', res2.table_preview || []);
+        }
+      } catch (err) {
+        addMessage('assistant', 'Execution request failed: ' + err);
+      }
+      runSql.removeEventListener('click', runHandler);
+      cancelSql.removeEventListener('click', cancelHandler);
+    };
+    const cancelHandler = ()=>{ sqlModal.classList.add('hidden'); runSql.removeEventListener('click', runHandler); cancelSql.removeEventListener('click', cancelHandler); };
+    runSql.addEventListener('click', runHandler);
+    cancelSql.addEventListener('click', cancelHandler);
+  } catch (err) {
+    addMessage('assistant', 'Request failed: ' + err);
+  }
+});
+
+// initial load
+loadFiles();
+</script>
+</body>
+</html>
+
