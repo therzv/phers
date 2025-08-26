@@ -8,13 +8,13 @@ import pandas as pd
 from typing import List
 
 from core import (
-    conn, DATA_DIR, UPLOADED_FILES, TABLE_COLUMNS, COLUMN_NAME_MAP,
+    DATA_DIR, UPLOADED_FILES, TABLE_COLUMNS, COLUMN_NAME_MAP,
     load_dataframe_to_sql, initialize_data_folder, index_dataframe_to_chroma,
     INDEXING_STATUS, CHROMA_AVAILABLE, CHROMA_IDS_BY_FILE, chroma_collection,
     score_candidate_tables, normalize_question_text, build_schema_description,
     SQL_PROMPT_TEMPLATE, validate_sql_safe, validate_sql_against_schema,
     get_llm, PANDAS_AI_AVAILABLE, PANDASAI_LANGCHAIN_AVAILABLE, PandasAI, LangChain,
-    SQLPARSE_AVAILABLE
+    SQLPARSE_AVAILABLE, read_table_into_df, drop_table
 )
 import threading
 import re
@@ -99,7 +99,7 @@ async def delete_file(filename: str):
     tbl = UPLOADED_FILES.pop(filename, None)
     if tbl:
         try:
-            conn.execute(f"DROP TABLE IF EXISTS \"{tbl}\"")
+            drop_table(tbl)
             TABLE_COLUMNS.pop(tbl, None)
         except Exception:
             pass
@@ -146,7 +146,7 @@ async def chat(req: dict):
             raise HTTPException(status_code=400, detail="No suitable table found to query.")
         tbl = chosen['table']
         try:
-            df = pd.read_sql_query(f"select * from \"{tbl}\" limit 5000", conn)
+            df = read_table_into_df(tbl, limit=5000)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to load table {tbl}: {e}")
         try:

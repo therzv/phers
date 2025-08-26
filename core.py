@@ -3,6 +3,8 @@ This module holds DB connection, table state, indexing, LLM helper, and utility 
 """
 from typing import Dict, Any, List, Optional
 import sqlite3
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 import pandas as pd
 import os
 import io
@@ -58,8 +60,45 @@ INDEXING_STATUS: Dict[str, Dict[str, Any]] = {}
 
 # Database and table metadata
 DATA_DIR = "data"
-DB_PATH = ":memory:"
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+DB_PATH = os.environ.get("DB_PATH") or os.environ.get("DATABASE_URL")
+ENGINE: Optional[Engine] = None
+
+# Prefer a DATABASE_URL or explicit MySQL env vars if provided, otherwise default to a local sqlite file
+def _init_engine():
+    global ENGINE
+    if ENGINE:
+        return ENGINE
+    # If DATABASE_URL provided (SQLAlchemy format), use it
+    db_url = os.environ.get('DATABASE_URL') or os.environ.get('DB_PATH')
+    if db_url:
+        ENGINE = create_engine(db_url, future=True)
+        return ENGINE
+    # else try explicit MySQL components
+    mysql_host = os.environ.get('MYSQL_HOST')
+    mysql_port = os.environ.get('MYSQL_PORT', '3306')
+    mysql_user = os.environ.get('MYSQL_USER')
+    mysql_pass = os.environ.get('MYSQL_PASS')
+    mysql_db = os.environ.get('MYSQL_DB')
+    if mysql_host and mysql_user and mysql_db:
+        user = mysql_user
+        password = mysql_pass or ''
+        host = mysql_host
+        port = mysql_port
+        db = mysql_db
+        ENGINE = create_engine(f"mysql+pymysql://{user}:{password}@{host}:{port}/{db}", future=True)
+        return ENGINE
+    # fallback to a local sqlite file in data/
+    os.makedirs(DATA_DIR, exist_ok=True)
+    sqlite_path = os.path.join(DATA_DIR, 'phers.db')
+    ENGINE = create_engine(f"sqlite:///{sqlite_path}", future=True)
+    return ENGINE
+
+# For backwards compatibility with simple sqlite3 usage elsewhere, provide a thin sqlite3 connection for now
+_init_engine()
+try:
+    conn = sqlite3.connect(os.path.join(DATA_DIR, 'phers.db'), check_same_thread=False)
+except Exception:
+    conn = None
 TABLE_COLUMNS: Dict[str, list] = {}
 UPLOADED_FILES: Dict[str, str] = {}
 COLUMN_NAME_MAP: Dict[str, Dict[str, str]] = {}
@@ -229,18 +268,29 @@ def validate_sql_against_schema(sql: str):
 
         candidates = set()
         # 1) columns in SELECT clause: between SELECT and FROM
+        SQL_FUNCTIONS = {"count", "sum", "avg", "min", "max"}
         m = re.search(r"select\s+(.*?)\s+from\b", cleaned, flags=re.IGNORECASE | re.DOTALL)
         if m:
             sel = m.group(1)
-            # split by commas and extract identifiers
+            # split by commas and extract likely identifiers (skip SQL functions)
             for part in re.split(r",", sel):
-                # capture the first identifier-like token (could be `count(*) as cnt` etc.)
+                # capture the first identifier-like token
                 idm = re.search(r"\b([A-Za-z_][A-Za-z0-9_]*)\b", part)
                 if idm:
-                    candidates.add(idm.group(1))
+                    tok = idm.group(1)
+                    if tok.lower() in SQL_FUNCTIONS:
+                        # try to find alias after 'as' or the next identifier
+                        alias = re.search(r"\bas\s+([A-Za-z_][A-Za-z0-9_]*)\b", part, flags=re.IGNORECASE)
+                        if alias:
+                            candidates.add(alias.group(1))
+                        else:
+                            # skip function names as column candidates
+                            continue
+                    else:
+                        candidates.add(tok)
 
         # 2) left-hand side identifiers in WHERE (col = ... , col IN (...), col LIKE ...)
-        for match in re.finditer(r"\b([A-Za-z_][A-ZaZ0-9_]*)\b\s*(?:=|<>|!=|<|>|\bin\b|\blike\b)", cleaned, flags=re.IGNORECASE):
+        for match in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\b\s*(?:=|<>|!=|<|>|\bin\b|\blike\b)", cleaned, flags=re.IGNORECASE):
             candidates.add(match.group(1))
 
         # 3) ORDER BY / GROUP BY columns
@@ -248,7 +298,7 @@ def validate_sql_against_schema(sql: str):
             mm = re.search(rf"{kw}\s+(.*?)(?:$|limit|offset|where|order by|group by)", cleaned, flags=re.IGNORECASE | re.DOTALL)
             if mm:
                 for part in re.split(r",", mm.group(1)):
-                    idm = re.search(r"\b([A-Za-z_][A-ZaZ0-9_]*)\b", part)
+                    idm = re.search(r"\b([A-Za-z_][A-Za-z0-9_]*)\b", part)
                     if idm:
                         candidates.add(idm.group(1))
 
@@ -258,7 +308,15 @@ def validate_sql_against_schema(sql: str):
             for c in cols:
                 all_cols_map[c.lower()] = (tbl, c)
 
+        # filter out common SQL keywords and very short tokens (e.g., 'in')
+        SQL_KEYWORDS = {"in", "and", "or", "like", "not", "is", "on", "as", "by", "from", "select", "where", "group", "order", "having", "limit", "offset", "join", "true", "false", "null"}
+
         for ident in list(candidates):
+            if not ident or len(ident) < 3:
+                # ignore very short tokens (likely SQL keywords like 'in')
+                continue
+            if ident.lower() in SQL_KEYWORDS:
+                continue
             if ident.lower() in all_cols_map:
                 # found as column
                 continue
@@ -341,11 +399,50 @@ def load_dataframe_to_sql(df: pd.DataFrame, table_name: str):
         col_map[s] = str(c)
     df = df.copy()
     df.columns = sanitized_cols
-    df.to_sql(table_name_safe, conn, if_exists="replace", index=False)
+    # write using pandas to_sql via SQLAlchemy engine for broader DB support
+    engine = _init_engine()
+    try:
+        df.to_sql(table_name_safe, engine, if_exists="replace", index=False, method='multi')
+    except Exception:
+        # fallback to sqlite3 direct if SQLAlchemy write fails
+        if conn is not None:
+            df.to_sql(table_name_safe, conn, if_exists="replace", index=False)
+        else:
+            raise
     cols = list(df.columns)
     TABLE_COLUMNS[table_name_safe] = cols
     COLUMN_NAME_MAP[table_name_safe] = col_map
     return table_name_safe
+
+
+def read_table_into_df(table: str, limit: Optional[int] = None) -> pd.DataFrame:
+    engine = _init_engine()
+    q = f"select * from \"{table}\""
+    if limit:
+        q = q + f" limit {limit}"
+    try:
+        return pd.read_sql_query(q, engine)
+    except Exception:
+        # fallback to sqlite3
+        if conn is not None:
+            return pd.read_sql_query(q, conn)
+        raise
+
+
+def drop_table(table: str):
+    engine = _init_engine()
+    try:
+        with engine.connect() as c:
+            c.execute(text(f"DROP TABLE IF EXISTS \"{table}\""))
+    except Exception:
+        # fallback to sqlite3
+        if conn is not None:
+            try:
+                conn.execute(f'DROP TABLE IF EXISTS "{table}"')
+            except Exception:
+                pass
+        else:
+            raise
 
 
 def initialize_data_folder():
@@ -422,54 +519,81 @@ def validate_sql_safe(sql: str):
 
 
 def auto_quote_string_literals(sql: str) -> str:
-    """Attempt to quote obvious unquoted string literals on the RHS of = and LIKE.
+    """Conservative sanitizer to quote unquoted string literals.
 
-    This is a conservative sanitizer to handle cases where an LLM emits: WHERE status = In Repair
-    Instead we convert to: WHERE status = 'In Repair'
-
-    Rules:
-    - Only quote RHS tokens that contain letters (not pure numbers) and are not already quoted.
-    - Handle = and LIKE. Skip IN (...) forms.
-    - Avoid quoting identifiers (basic heuristic: LHS is identifier, RHS contains spaces or capitalized words -> quote).
+    Enhancements:
+    - Quote items inside IN(...) lists when not quoted
+    - Quote RHS for = and LIKE when the RHS looks like a textual value
     """
-    # Find simple patterns of the form: <identifier> <op> <value...>
-    # where op is = or LIKE. Capture RHS up to a clause separator (AND/OR/,/) or end.
-    pattern = re.compile(r"(?P<lhs>\b[A-Za-z_][A-Za-z0-9_\.]*\b)\s*(?P<op>=|LIKE|like)\s*(?P<val>[^,;\)]+)", flags=re.IGNORECASE)
-
-    def _replace(m):
-        lhs = m.group('lhs')
-        op = m.group('op')
-        val = m.group('val').strip()
-        # trim trailing clause connectors like AND/OR
-        val = re.split(r"\b(and|or)\b", val, flags=re.IGNORECASE)[0].strip()
-        # if already quoted, or is numeric or a placeholder, skip
-        if not val:
-            return m.group(0)
-        if val[0] in ("'", '"'):
-            return m.group(0)
-        if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", val):
-            return m.group(0)
-        # skip common SQL keywords
-        if val.lower() in ('null','true','false'):
-            return m.group(0)
-        # skip if looks like a column reference (single token matching identifier)
-        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_\.]*", val):
-            # if RHS is single token but matches a known column on left, assume it's value only when it's capitalized words or contains spaces/hyphens
-            # we will inspect: if val has lower-case only and matches known column names, skip quoting here (avoid false positives)
-            ln = val.lower()
-            if ln in (c.lower() for c in TABLE_COLUMNS.get(lhs.lower(), [])):
-                return m.group(0)
-        # quote the trimmed value (escape single quotes)
-        safe = val.replace("'", "''")
-        # preserve any trailing characters after the matched val (e.g., ) or extra whitespace) by reconstructing
-        prefix = m.string[m.start():m.start('op')]
-        # build replacement for op and quoted val
-        return f"{prefix}{op} '{safe}'"
-
-    try:
-        return pattern.sub(_replace, sql)
-    except Exception:
+    if not sql:
         return sql
+
+    def _quote_item_raw(v: str) -> str:
+        v = v.strip()
+        if not v:
+            return v
+        if v[0] in ("'", '"'):
+            return v
+        if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", v):
+            return v
+        if v.lower() in ('null', 'true', 'false'):
+            return v
+        # escape single quotes
+        safe = v.replace("'", "''")
+        return f"'{safe}'"
+
+    # 1) Handle IN lists: col IN (a, b, c) -> col IN ('a','b','c')
+    try:
+        pattern_in = re.compile(r"(\b[A-Za-z_][A-Za-z0-9_\.]*\b)\s+IN\s*\(([^\)]*?)\)", flags=re.IGNORECASE)
+
+        def _in_replace(m):
+            lhs = m.group(1)
+            items = m.group(2)
+            # split on commas that are not inside quotes (simple approach)
+            parts = [p.strip() for p in re.split(r',', items)]
+            quoted = []
+            for p in parts:
+                if not p:
+                    continue
+                quoted.append(_quote_item_raw(p))
+            return f"{lhs} IN ({', '.join(quoted)})"
+
+        sql = pattern_in.sub(_in_replace, sql)
+    except Exception:
+        pass
+
+    # 2) Handle = and LIKE where RHS looks like textual value
+    try:
+        pattern = re.compile(r"(?P<lhs>\b[A-Za-z_][A-Za-z0-9_\.]*\b)\s*(?P<op>=|LIKE|like)\s*(?P<val>[^;\)]+)", flags=re.IGNORECASE)
+
+        def _replace(m):
+            lhs = m.group('lhs')
+            op = m.group('op')
+            val = m.group('val').strip()
+            # stop at AND/OR if present
+            val = re.split(r"\b(and|or)\b", val, flags=re.IGNORECASE)[0].strip()
+            if not val:
+                return m.group(0)
+            if val[0] in ("'", '"'):
+                return m.group(0)
+            if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", val):
+                return m.group(0)
+            if val.lower() in ('null', 'true', 'false'):
+                return m.group(0)
+            # If RHS is a single token that matches a known column for this table, avoid quoting
+            # (we can't always know table here; be conservative and only skip if it's an exact known column name anywhere)
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_\.]*", val):
+                if val.lower() in (c.lower() for cols in TABLE_COLUMNS.values() for c in cols):
+                    return m.group(0)
+            safe = val.replace("'", "''")
+            prefix = m.string[m.start():m.start('op')]
+            return f"{prefix}{op} { _quote_item_raw(val) }"
+
+        sql = pattern.sub(_replace, sql)
+    except Exception:
+        pass
+
+    return sql
 
 
 SQL_PROMPT_TEMPLATE = '''You are a strict SQL generator. The user will ask a question to query HR tables.
