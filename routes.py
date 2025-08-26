@@ -256,3 +256,28 @@ async def health():
     info['ollama_base_url'] = os.environ.get('OLLAMA_BASE_URL')
     info['ollama_model'] = os.environ.get('OLLAMA_MODEL')
     return info
+
+
+@router.get('/debug_sql')
+async def debug_sql(question: str):
+    """Dev helper: returns the raw SQL produced by the LLM and the sanitized SQL we plan to run.
+
+    Only intended for debugging in dev. Do not expose in production.
+    """
+    # build prompt
+    try:
+        normalized_q = normalize_question_text(question)
+        schema = build_schema_description()
+        sql_prompt = SQL_PROMPT_TEMPLATE.format(schema=schema, question=normalized_q)
+        llm = get_llm()
+        llm_response = llm.predict(sql_prompt)
+        m = re.search(r"<SQL>(.*?)</SQL>", llm_response, flags=re.DOTALL | re.IGNORECASE)
+        raw_sql = m.group(1).strip() if m else None
+        try:
+            from core import auto_quote_string_literals
+            sanitized = auto_quote_string_literals(raw_sql) if raw_sql else None
+        except Exception:
+            sanitized = None
+        return {"raw_sql": raw_sql, "sanitized_sql": sanitized, "llm_response": llm_response}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

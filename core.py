@@ -432,25 +432,42 @@ def auto_quote_string_literals(sql: str) -> str:
     - Handle = and LIKE. Skip IN (...) forms.
     - Avoid quoting identifiers (basic heuristic: LHS is identifier, RHS contains spaces or capitalized words -> quote).
     """
-    def _quote_match(m):
+    # Find simple patterns of the form: <identifier> <op> <value...>
+    # where op is = or LIKE. Capture RHS up to a clause separator (AND/OR/,/) or end.
+    pattern = re.compile(r"(?P<lhs>\b[A-Za-z_][A-Za-z0-9_\.]*\b)\s*(?P<op>=|LIKE|like)\s*(?P<val>[^,;\)]+)", flags=re.IGNORECASE)
+
+    def _replace(m):
+        lhs = m.group('lhs')
         op = m.group('op')
         val = m.group('val').strip()
-        # if already quoted or looks numeric, skip
-        if val.startswith("'") or val.startswith('"'):
+        # trim trailing clause connectors like AND/OR
+        val = re.split(r"\b(and|or)\b", val, flags=re.IGNORECASE)[0].strip()
+        # if already quoted, or is numeric or a placeholder, skip
+        if not val:
+            return m.group(0)
+        if val[0] in ("'", '"'):
             return m.group(0)
         if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", val):
             return m.group(0)
-        # if val contains parentheses (likely IN (...)) skip
-        if val.startswith('(') or val.endswith(')'):
+        # skip common SQL keywords
+        if val.lower() in ('null','true','false'):
             return m.group(0)
-        # quote the value
+        # skip if looks like a column reference (single token matching identifier)
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_\.]*", val):
+            # if RHS is single token but matches a known column on left, assume it's value only when it's capitalized words or contains spaces/hyphens
+            # we will inspect: if val has lower-case only and matches known column names, skip quoting here (avoid false positives)
+            ln = val.lower()
+            if ln in (c.lower() for c in TABLE_COLUMNS.get(lhs.lower(), [])):
+                return m.group(0)
+        # quote the trimmed value (escape single quotes)
         safe = val.replace("'", "''")
-        return f"{op} '{safe}'"
+        # preserve any trailing characters after the matched val (e.g., ) or extra whitespace) by reconstructing
+        prefix = m.string[m.start():m.start('op')]
+        # build replacement for op and quoted val
+        return f"{prefix}{op} '{safe}'"
 
-    # pattern: capture operator and the following RHS token(s) until comma/and/where/end/))
-    pattern = re.compile(r"(?P<op>\b(?:=|like)\b)\s+(?P<val>[A-Za-z][A-Za-z0-9_\s\-]{0,200})(?=(\s|,|\)|$))", flags=re.IGNORECASE)
     try:
-        return pattern.sub(_quote_match, sql)
+        return pattern.sub(_replace, sql)
     except Exception:
         return sql
 
