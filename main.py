@@ -1,8 +1,8 @@
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from .core import initialize_data_folder, update_question_replacements
-from .routes import router
+from core import initialize_data_folder, update_question_replacements
+from routes import router
 
 app = FastAPI(title="HR-Data Chat (Simple)")
 app.mount("/static", StaticFiles(directory="static", html=True), name="static")

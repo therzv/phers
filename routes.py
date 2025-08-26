@@ -7,7 +7,7 @@ import json
 import pandas as pd
 from typing import List
 
-from .core import (
+from core import (
     conn, DATA_DIR, UPLOADED_FILES, TABLE_COLUMNS, COLUMN_NAME_MAP,
     load_dataframe_to_sql, initialize_data_folder, index_dataframe_to_chroma,
     INDEXING_STATUS, CHROMA_AVAILABLE, CHROMA_IDS_BY_FILE, chroma_collection,
