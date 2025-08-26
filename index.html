@@ -323,6 +323,11 @@ form.addEventListener('submit', async (e)=>{
       }catch(e){/*ignore chooser errors*/}
     }
 
+    // If server returned no SQL (pandas-ai / dataframe-first flow), show the summary directly
+    if (!data.sql) {
+      addMessage('assistant', data.summary || 'No summary', data.table_preview || []);
+      return;
+    }
     // show SQL preview modal
     sqlText.innerText = data.sql || '';
     sqlSuggestions.innerText = data.suggestions && data.suggestions.length ? ('Suggestions: ' + data.suggestions.join(' | ')) : '';

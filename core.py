@@ -205,38 +205,73 @@ def normalize_question_text(q: str) -> str:
 
 
 def validate_sql_against_schema(sql: str):
-    """Parse SQL and ensure it only references known tables and columns."""
+    """A more robust SQL schema validator.
+
+    Strategy:
+    - Remove quoted strings so literal values aren't treated as identifiers.
+    - Find table names by searching known table safe names in the SQL text.
+    - Extract candidate column identifiers from the SELECT clause, FROM/JOIN (tables), and left-hand side
+      of comparison operators in WHERE (e.g. `status = 'In Repair'` -> validate `status` only).
+    - Only validate candidates (not arbitrary tokens) against `TABLE_COLUMNS` case-insensitively.
+    """
     try:
-        parsed = sqlparse.parse(sql)
-        if not parsed:
-            raise ValueError("Could not parse SQL")
-        # Remove contents of single- and double-quoted string literals so values like 'III' are not treated as identifiers
+        # remove quoted strings (single & double) to avoid treating values as identifiers
         try:
             cleaned = re.sub(r"('(?:''|[^'])*'|\"(?:\"\"|[^\"])*\")", "", sql)
         except Exception:
             cleaned = sql
-        text = cleaned.lower()
-        used_tables = [t for t in TABLE_COLUMNS.keys() if t.lower() in text]
+        txt = cleaned.lower()
+
+        # find mentioned tables (by sanitized table name)
+        used_tables = [t for t in TABLE_COLUMNS.keys() if re.search(r"\b" + re.escape(t.lower()) + r"\b", txt)]
         if not used_tables:
             raise Exception("SQL references unknown tables.")
-        identifiers = set(re.findall(r"\b[\w_]+\b", cleaned))
-        keywords = {k.lower() for k in ['select','from','where','group','by','order','limit','and','or','as','on','join','left','right','inner','outer','having','count','sum','avg','min','max']}
-        idents = [i for i in identifiers if i.lower() not in keywords]
-        for ident in idents:
-            found = False
-            for t in used_tables:
-                if ident in TABLE_COLUMNS.get(t, []):
-                    found = True
-                    break
-            if not found and ident.lower() not in [t.lower() for t in TABLE_COLUMNS.keys()]:
-                all_cols = []
-                for cols in TABLE_COLUMNS.values():
-                    all_cols.extend(cols)
-                suggestions = difflib.get_close_matches(ident, all_cols, n=3, cutoff=0.6)
-                suggestion_text = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
-                raise Exception(f"SQL references unknown column or identifier: {ident}.{suggestion_text}")
+
+        candidates = set()
+        # 1) columns in SELECT clause: between SELECT and FROM
+        m = re.search(r"select\s+(.*?)\s+from\b", cleaned, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            sel = m.group(1)
+            # split by commas and extract identifiers
+            for part in re.split(r",", sel):
+                # capture the first identifier-like token (could be `count(*) as cnt` etc.)
+                idm = re.search(r"\b([A-Za-z_][A-Za-z0-9_]*)\b", part)
+                if idm:
+                    candidates.add(idm.group(1))
+
+        # 2) left-hand side identifiers in WHERE (col = ... , col IN (...), col LIKE ...)
+        for match in re.finditer(r"\b([A-Za-z_][A-ZaZ0-9_]*)\b\s*(?:=|<>|!=|<|>|\bin\b|\blike\b)", cleaned, flags=re.IGNORECASE):
+            candidates.add(match.group(1))
+
+        # 3) ORDER BY / GROUP BY columns
+        for kw in ("order by", "group by", "having"):
+            mm = re.search(rf"{kw}\s+(.*?)(?:$|limit|offset|where|order by|group by)", cleaned, flags=re.IGNORECASE | re.DOTALL)
+            if mm:
+                for part in re.split(r",", mm.group(1)):
+                    idm = re.search(r"\b([A-Za-z_][A-ZaZ0-9_]*)\b", part)
+                    if idm:
+                        candidates.add(idm.group(1))
+
+        # validate each candidate against known columns (case-insensitive)
+        all_cols_map = {}
+        for tbl, cols in TABLE_COLUMNS.items():
+            for c in cols:
+                all_cols_map[c.lower()] = (tbl, c)
+
+        for ident in list(candidates):
+            if ident.lower() in all_cols_map:
+                # found as column
+                continue
+            # also allow table names to appear as identifiers in some expressions
+            if ident.lower() in [t.lower() for t in TABLE_COLUMNS.keys()]:
+                continue
+            # not found -> gather suggestions
+            suggestions = difflib.get_close_matches(ident, list(all_cols_map.keys()), n=3, cutoff=0.6)
+            suggestion_text = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+            raise Exception(f"SQL references unknown column or identifier: {ident}.{suggestion_text}")
+
         return True
-    except Exception as e:
+    except Exception:
         raise
 
 
@@ -384,6 +419,40 @@ def validate_sql_safe(sql: str):
     if not re.match(r"^[\s\w\d\.\,\*\(\)=<>!\"'%-]+$", sql):
         raise HTTPException(status_code=400, detail="SQL contains unexpected characters.")
     return True
+
+
+def auto_quote_string_literals(sql: str) -> str:
+    """Attempt to quote obvious unquoted string literals on the RHS of = and LIKE.
+
+    This is a conservative sanitizer to handle cases where an LLM emits: WHERE status = In Repair
+    Instead we convert to: WHERE status = 'In Repair'
+
+    Rules:
+    - Only quote RHS tokens that contain letters (not pure numbers) and are not already quoted.
+    - Handle = and LIKE. Skip IN (...) forms.
+    - Avoid quoting identifiers (basic heuristic: LHS is identifier, RHS contains spaces or capitalized words -> quote).
+    """
+    def _quote_match(m):
+        op = m.group('op')
+        val = m.group('val').strip()
+        # if already quoted or looks numeric, skip
+        if val.startswith("'") or val.startswith('"'):
+            return m.group(0)
+        if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", val):
+            return m.group(0)
+        # if val contains parentheses (likely IN (...)) skip
+        if val.startswith('(') or val.endswith(')'):
+            return m.group(0)
+        # quote the value
+        safe = val.replace("'", "''")
+        return f"{op} '{safe}'"
+
+    # pattern: capture operator and the following RHS token(s) until comma/and/where/end/))
+    pattern = re.compile(r"(?P<op>\b(?:=|like)\b)\s+(?P<val>[A-Za-z][A-Za-z0-9_\s\-]{0,200})(?=(\s|,|\)|$))", flags=re.IGNORECASE)
+    try:
+        return pattern.sub(_quote_match, sql)
+    except Exception:
+        return sql
 
 
 SQL_PROMPT_TEMPLATE = '''You are a strict SQL generator. The user will ask a question to query HR tables.

@@ -176,7 +176,7 @@ async def chat(req: dict):
                     table_preview = df_result.head(10).to_dict(orient='records')
             except Exception:
                 pass
-            return {"sql": None, "suggestions": [], "inferred_tables": [tbl], "summary": summary_text, "table_preview": table_preview}
+            return {"suggestions": [], "inferred_tables": [tbl], "summary": summary_text, "table_preview": table_preview}
         except HTTPException:
             raise
         except Exception as e:
@@ -197,6 +197,12 @@ async def chat(req: dict):
     if not m:
         raise HTTPException(status_code=500, detail="LLM did not return SQL within <SQL> tags.")
     sql = m.group(1).strip()
+    # attempt to auto-quote unquoted textual literals (helps LLM outputs like: WHERE status = In Repair)
+    try:
+        from core import auto_quote_string_literals
+        sql = auto_quote_string_literals(sql)
+    except Exception:
+        pass
     validate_sql_safe(sql)
     suggestions = []
     try:
