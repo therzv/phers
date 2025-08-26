@@ -18,6 +18,8 @@ from core import (
 )
 import threading
 import re
+import sys
+import importlib
 
 router = APIRouter()
 
@@ -119,7 +121,22 @@ async def chat(req: dict):
         return JSONResponse({"error": "No tables loaded. Upload CSV/XLSX files first."}, status_code=400)
 
     use_pandas_ai = os.environ.get('USE_PANDAS_AI', '0') in ['1', 'true', 'True']
-    if use_pandas_ai and PANDAS_AI_AVAILABLE:
+    if use_pandas_ai:
+        # try lazy import of pandas-ai and adapters
+        try:
+            from pandasai import PandasAI
+            try:
+                from pandasai.llm.langchain import LangChain
+                pandasai_langchain = True
+            except Exception:
+                LangChain = None
+                pandasai_langchain = False
+        except Exception:
+            PandasAI = None
+            pandasai_langchain = False
+
+        if not PandasAI:
+            raise HTTPException(status_code=500, detail="pandas-ai not installed in the running Python environment.")
         candidates = score_candidate_tables(question)
         chosen = candidates[0] if candidates else None
         if not chosen and len(UPLOADED_FILES) == 1:
@@ -134,7 +151,7 @@ async def chat(req: dict):
             raise HTTPException(status_code=500, detail=f"Failed to load table {tbl}: {e}")
         try:
             adapter = None
-            if PANDASAI_LANGCHAIN_AVAILABLE:
+            if pandasai_langchain:
                 try:
                     llm_for_adapter = get_llm()
                     adapter = LangChain(llm_for_adapter)
@@ -206,3 +223,30 @@ async def chat(req: dict):
         return found
     inferred_tables = infer_tables_from_sql(sql)
     return {"sql": sql, "suggestions": suggestions, "inferred_tables": inferred_tables}
+
+
+@router.get('/health')
+async def health():
+    info = {}
+    info['python_executable'] = sys.executable
+    for mod in ('pandasai', 'pandasai.llm.langchain', 'pandasai.llm.openai', 'langchain'):
+        try:
+            importlib.import_module(mod)
+            info[mod] = True
+        except Exception:
+            info[mod] = False
+    try:
+        llm_ok = False
+        try:
+            lm = get_llm()
+            llm_ok = True
+        except Exception as e:
+            info['llm_error'] = str(e)
+        info['llm_constructed'] = llm_ok
+    except Exception as e:
+        info['llm_constructed'] = False
+        info['llm_error'] = str(e)
+    info['use_pandas_ai_env'] = os.environ.get('USE_PANDAS_AI', '0')
+    info['ollama_base_url'] = os.environ.get('OLLAMA_BASE_URL')
+    info['ollama_model'] = os.environ.get('OLLAMA_MODEL')
+    return info

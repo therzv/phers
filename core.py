@@ -12,23 +12,11 @@ import threading
 import datetime
 import math
 import difflib
+from fastapi import HTTPException  # lightweight dependency used for validation errors
 
-# Optional pandas-ai integration (fast prototype mode)
+# Optional pandas-ai integration (fast prototype mode) — lazy import in routes to avoid hard dependency at module import
 PANDAS_AI_AVAILABLE = False
 PANDASAI_LANGCHAIN_AVAILABLE = False
-try:
-    from pandasai import PandasAI
-    try:
-        # adapter that accepts a LangChain LLM instance
-        from pandasai.llm.langchain import LangChain
-        PANDASAI_LANGCHAIN_AVAILABLE = True
-    except Exception:
-        LangChain = None
-    PANDAS_AI_AVAILABLE = True
-except Exception:
-    PandasAI = None
-    LangChain = None
-    PANDAS_AI_AVAILABLE = False
 
 # sqlparse is used for SQL validation (separate from optional chroma)
 SQLPARSE_AVAILABLE = False
@@ -359,3 +347,123 @@ def initialize_data_folder():
                     pass
         except Exception:
             pass
+
+# --- additional helpers exported for routes.py ---
+
+# pandas-ai placeholders (actual imports are lazy in routes to avoid hard dependency at import time)
+PandasAI = None
+LangChain = None
+
+
+def build_schema_description():
+    if not TABLE_COLUMNS:
+        return "NO_TABLES"
+    parts = []
+    for t, cols in TABLE_COLUMNS.items():
+        col_texts = []
+        mapping = COLUMN_NAME_MAP.get(t, {})
+        for c in cols:
+            orig = mapping.get(c)
+            if orig and orig != c:
+                col_texts.append(f"{c} (original: {orig})")
+            else:
+                col_texts.append(c)
+        parts.append(f"Table `{t}` with columns: {', '.join(col_texts)}")
+    return "\n".join(parts)
+
+
+def validate_sql_safe(sql: str):
+    s = sql.strip().lower()
+    if not s.startswith("select"):
+        raise HTTPException(status_code=400, detail="LLM must return a SELECT query only.")
+    if ";" in s:
+        raise HTTPException(status_code=400, detail="Semicolons not allowed in SQL.")
+    forbidden = ["insert ", "update ", "delete ", "drop ", "alter ", "create "]
+    if any(k in s for k in forbidden):
+        raise HTTPException(status_code=400, detail="Only read (SELECT) queries are allowed.")
+    if not re.match(r"^[\s\w\d\.\,\*\(\)=<>!\"'%-]+$", sql):
+        raise HTTPException(status_code=400, detail="SQL contains unexpected characters.")
+    return True
+
+
+SQL_PROMPT_TEMPLATE = '''You are a strict SQL generator. The user will ask a question to query HR tables.
+Available schema (tables and columns):
+{schema}
+
+INSTRUCTIONS (critical - follow exactly):
+1. Produce a single, valid SQLite SELECT statement that answers the user's question.
+2. Use the exact table names and column names shown above.
+3. Do NOT invent columns, tables, or data.
+4. Do NOT include any comments, explanation, or extra text.
+5. Output ONLY the SQL inside a <SQL>...</SQL> tag, and nothing else.
+6. The SQL must be a single SELECT statement (no semicolons).
+7. Keep result columns concise (select only needed columns).
+
+User question:
+"""
+{question}
+"""
+
+Remember: return ONLY:
+<SQL>SELECT ...</SQL>
+'''
+
+
+SUMMARY_PROMPT_TEMPLATE = """You are a concise summarizer. I will provide:
+1) The original user question.
+2) The SQL that was executed.
+3) The resulting rows (as JSON array of objects). 
+
+Task: Produce a short, factual answer to the user question based *only* on the rows provided. Do NOT add any facts not present in the rows. If the result is empty, reply: "No matching records found." Keep it 1-3 sentences max.
+
+Format: return a JSON object with two keys:
+- "text": the short answer as a single string.
+- "table_preview": an array of up to 10 rows (objects) from the result to show to the user.
+
+Input:
+---
+question: {question}
+sql: {sql}
+rows_json: {rows_json}
+---
+"""
+
+
+def score_candidate_tables(question: str) -> List[Dict[str, Any]]:
+    q = (question or "").lower()
+    candidates: List[Dict[str, Any]] = []
+    for fname, tbl in UPLOADED_FILES.items():
+        score = 0.0
+        if tbl.lower() in q or os.path.splitext(fname)[0].lower() in q:
+            score += 1.0
+        cols = TABLE_COLUMNS.get(tbl, [])
+        for c in cols:
+            if c.lower() in q:
+                score += 0.5
+        candidates.append({"filename": fname, "table": tbl, "score": score})
+
+    if CHROMA_AVAILABLE and candidates:
+        try:
+            res = chroma_collection.query(query_texts=[question], n_results=3, include=['metadatas', 'distances'])
+            hits = res.get('metadatas', [[]])[0]
+            dists = res.get('distances', [[]])[0]
+            for i, h in enumerate(hits):
+                if isinstance(h, dict) and 'file' in h and 'table' in h:
+                    for c in candidates:
+                        if c['table'] == h['table']:
+                            try:
+                                c['score'] += max(0, 1.0 - float(dists[i]))
+                            except Exception:
+                                c['score'] += 0.5
+        except Exception:
+            pass
+
+    # small fuzzy boost
+    for c in candidates:
+        base = os.path.splitext(c['filename'])[0]
+        match = difflib.get_close_matches(base.lower(), [q], n=1, cutoff=0.6)
+        if match:
+            c['score'] += 0.4
+
+    candidates.sort(key=lambda x: x['score'], reverse=True)
+    return candidates
