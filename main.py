@@ -1,3 +1,20 @@
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+
+from .core import initialize_data_folder, update_question_replacements
+from .routes import router
+
+app = FastAPI(title="HR-Data Chat (Simple)")
+app.mount("/static", StaticFiles(directory="static", html=True), name="static")
+app.include_router(router)
+
+# initialize on import
+initialize_data_folder()
+update_question_replacements()
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
 # main.py
 from fastapi import FastAPI, UploadFile, File, Request, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
@@ -15,6 +32,23 @@ import difflib
 from typing import Dict, Any, List, Optional
 import uvicorn
 from pydantic import BaseModel
+
+# Optional pandas-ai integration (fast prototype mode)
+PANDAS_AI_AVAILABLE = False
+PANDASAI_LANGCHAIN_AVAILABLE = False
+try:
+    from pandasai import PandasAI
+    try:
+        # adapter that accepts a LangChain LLM instance
+        from pandasai.llm.langchain import LangChain
+        PANDASAI_LANGCHAIN_AVAILABLE = True
+    except Exception:
+        LangChain = None
+    PANDAS_AI_AVAILABLE = True
+except Exception:
+    PandasAI = None
+    LangChain = None
+    PANDAS_AI_AVAILABLE = False
 
 # sqlparse is used for SQL validation (separate from optional chroma)
 SQLPARSE_AVAILABLE = False
@@ -500,11 +534,6 @@ async def upload_file(file: UploadFile = File(...), background_tasks: Background
     table_name = load_dataframe_to_sql(df, os.path.splitext(filename)[0])
     # record uploaded file mapping
     UPLOADED_FILES[filename] = table_name
-    # ensure indexing status is present so the UI shows progress/finished even when CHROMA is not available
-    try:
-        INDEXING_STATUS[filename] = {"status": "indexing", "started": datetime.datetime.now().isoformat(), "progress": 0.0, "message": ""}
-    except Exception:
-        pass
     # schedule chroma indexing in background (threaded function)
     try:
         if CHROMA_AVAILABLE:
@@ -515,18 +544,6 @@ async def upload_file(file: UploadFile = File(...), background_tasks: Background
                     pass
             t = threading.Thread(target=_index, daemon=True)
             t.start()
-        else:
-            # If chroma isn't available, mark indexing as done immediately (we still loaded into SQL)
-            try:
-                rows = len(df)
-                chunk = int(os.environ.get("RAG_CHUNK_ROWS", "8"))
-                docs = max(1, math.ceil(rows / chunk))
-                INDEXING_STATUS[filename]["progress"] = 1.0
-                INDEXING_STATUS[filename]["status"] = "done"
-                INDEXING_STATUS[filename]["finished"] = datetime.datetime.now().isoformat()
-                INDEXING_STATUS[filename]["count"] = docs
-            except Exception:
-                pass
     except Exception:
         pass
 
@@ -649,6 +666,69 @@ async def chat(req: ChatRequest):
     if not TABLE_COLUMNS:
         return JSONResponse({"error": "No tables loaded. Upload CSV/XLSX files first."}, status_code=400)
 
+    # Optionally use pandas-ai for direct DataFrame querying (preferred when enabled)
+    use_pandas_ai = os.environ.get('USE_PANDAS_AI', '0') in ['1', 'true', 'True']
+    if use_pandas_ai and PANDAS_AI_AVAILABLE:
+        # choose best candidate table
+        candidates = score_candidate_tables(question)
+        chosen = None
+        if candidates:
+            chosen = candidates[0]
+        if not chosen and len(UPLOADED_FILES) == 1:
+            fname, tbl = next(iter(UPLOADED_FILES.items()))
+            chosen = {"filename": fname, "table": tbl, "score": 0.0}
+
+        if not chosen:
+            raise HTTPException(status_code=400, detail="No suitable table found to query.")
+
+        tbl = chosen['table']
+        try:
+            df = pd.read_sql_query(f"select * from \"{tbl}\" limit 5000", conn)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to load table {tbl}: {e}")
+
+        # build pandas-ai LLM adapter: prefer LangChain adapter with local Ollama LLM
+        try:
+            adapter = None
+            if PANDASAI_LANGCHAIN_AVAILABLE:
+                try:
+                    llm_for_adapter = get_llm()
+                    adapter = LangChain(llm_for_adapter)
+                except Exception:
+                    adapter = None
+
+            if adapter is None:
+                # fallback: try pandasai OpenAI adapter if env key present
+                try:
+                    from pandasai.llm.openai import OpenAI as PandasOpenAI
+                    if os.environ.get('OPENAI_API_KEY'):
+                        adapter = PandasOpenAI(api_token=os.environ.get('OPENAI_API_KEY'))
+                except Exception:
+                    adapter = None
+
+            if adapter is None:
+                raise HTTPException(status_code=500, detail='No usable LLM adapter for pandas-ai (enable Ollama or set OPENAI_API_KEY)')
+
+            pandas_ai = PandasAI(adapter)
+            # run summary
+            summary_resp = pandas_ai.run(df, prompt=question)
+            summary_text = str(summary_resp)
+            table_preview = []
+            # try to explicitly request a DataFrame result
+            try:
+                df_result = pandas_ai.run(df, prompt=f"Return a pandas DataFrame (only data) with up to 10 rows answering: {question}")
+                if hasattr(df_result, 'to_dict'):
+                    table_preview = df_result.head(10).to_dict(orient='records')
+            except Exception:
+                pass
+
+            return {"sql": None, "suggestions": [], "inferred_tables": [tbl], "summary": summary_text, "table_preview": table_preview}
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Pandas-AI error: {e}")
+
+    # Default legacy SQL path (unchanged)
     # Build prompt for SQL generation
     # normalize user text to replace known original column/table mentions with sanitized identifiers
     normalized_q = normalize_question_text(question)
