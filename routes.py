@@ -342,7 +342,103 @@ async def execute_sql(req: dict):
     else:
         display_rows = rows
 
-    return {"sql": sql, "rows": rows, "summary": summary_text or (f"{len(rows)} rows returned."), "table_preview": table_preview, "display_rows": display_rows}
+    # If zero rows, try to suggest close matches for RHS literals in equality expressions
+    suggestions = []
+    try:
+        if not rows:
+            # find simple equality patterns like: column = 'value'
+            # handle double or single quotes
+            eqs = re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\b\s*=\s*'(.*?)'", sql, flags=re.IGNORECASE)
+            eqs += re.findall(r'\b([A-Za-z_][A-Za-z0-9_]*)\b\s*=\s*"(.*?)"', sql, flags=re.IGNORECASE)
+            # try for IN lists: col IN ('a','b')
+            in_matches = re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\b\s+IN\s*\((.*?)\)", sql, flags=re.IGNORECASE)
+            # infer table name from SQL text (best-effort)
+            inferred_table = None
+            for t in TABLE_COLUMNS.keys():
+                if t.lower() in sql.lower():
+                    inferred_table = t
+                    break
+            for col, val in eqs:
+                if not inferred_table:
+                    continue
+                # fetch distinct values for column
+                candidates = []
+                try:
+                    q = f'SELECT DISTINCT "{col}" as v FROM "{inferred_table}" WHERE "{col}" IS NOT NULL LIMIT 500'
+                    if ENGINE is not None:
+                        with ENGINE.connect() as cx:
+                            res = cx.execute(text(q))
+                            candidates = [ (r[0] if isinstance(r, (list, tuple)) else r) for r in res.fetchall() ]
+                    elif conn is not None:
+                        cur = conn.cursor()
+                        cur.execute(q)
+                        candidates = [r[0] for r in cur.fetchall()]
+                except Exception:
+                    candidates = []
+                # normalize and match
+                cand_strs = [str(c) for c in candidates if c is not None]
+                lower_map = {s.lower(): s for s in cand_strs}
+                import difflib as _dif
+                matches = _dif.get_close_matches(val.lower(), [s.lower() for s in cand_strs], n=5, cutoff=0.6)
+                matched = [lower_map[m] for m in matches if m in lower_map]
+                # also include exact case-insensitive matches
+                if val.lower() in lower_map and lower_map[val.lower()] not in matched:
+                    matched.insert(0, lower_map[val.lower()])
+                if matched:
+                    suggested_sqls = []
+                    for mv in matched:
+                        # create a suggested SQL by replacing the first occurrence of the literal (keep quotes)
+                        safe_mv = mv.replace("'","''")
+                        pattern = re.compile(r"(\b" + re.escape(col) + r"\b\s*=\s*)(?:'[^']*'|\"[^\"]*\")", flags=re.IGNORECASE)
+                        def _repl(m):
+                            return m.group(1) + "'" + safe_mv + "'"
+                        sug = pattern.sub(_repl, sql, count=1)
+                        # if the regex didn't replace (different quoting), try simple replace of the original value
+                        if sug == sql:
+                            sug = sql.replace("'"+val+"'", "'"+safe_mv+"'")
+                        suggested_sqls.append(sug)
+                    suggestions.append({"column": col, "original": val, "candidates": matched, "suggested_sqls": suggested_sqls})
+            # handle IN-list suggestions (simple: if any list item fuzzy-matches known values)
+            for col, list_body in in_matches:
+                if not inferred_table:
+                    continue
+                list_items = re.findall(r"'([^']*)'|\"([^\"]*)\"", list_body)
+                # flatten tuples
+                items = [a or b for a,b in list_items]
+                # fetch candidates as above
+                candidates = []
+                try:
+                    q = f'SELECT DISTINCT "{col}" as v FROM "{inferred_table}" WHERE "{col}" IS NOT NULL LIMIT 500'
+                    if ENGINE is not None:
+                        with ENGINE.connect() as cx:
+                            res = cx.execute(text(q))
+                            candidates = [ (r[0] if isinstance(r, (list, tuple)) else r) for r in res.fetchall() ]
+                    elif conn is not None:
+                        cur = conn.cursor()
+                        cur.execute(q)
+                        candidates = [r[0] for r in cur.fetchall()]
+                except Exception:
+                    candidates = []
+                cand_strs = [str(c) for c in candidates if c is not None]
+                import difflib as _dif
+                matched_map = {}
+                for it in items:
+                    matches = _dif.get_close_matches(it.lower(), [s.lower() for s in cand_strs], n=3, cutoff=0.6)
+                    matched = [ { 'original': it, 'matches': [ { 'value': (lambda m: ( [s for s in cand_strs if s.lower()==m][0] if any(s.lower()==m for s in cand_strs) else m ))(m) } for m in matches ] } ]
+                    if matched:
+                        matched_map[it] = matched
+                if matched_map:
+                    # produce a suggested SQL by replacing each original item with first matched candidate
+                    sug_sql = sql
+                    for it, ml in matched_map.items():
+                        first = ml[0]['matches'][0]['value']
+                        safe_mv = first.replace("'","''")
+                        sug_sql = sug_sql.replace("'"+it+"'", "'"+safe_mv+"'")
+                    suggestions.append({"column": col, "original_in_list": items, "candidates_map": matched_map, "suggested_sqls": [sug_sql]})
+    except Exception:
+        suggestions = []
+
+    return {"sql": sql, "rows": rows, "summary": summary_text or (f"{len(rows)} rows returned."), "table_preview": table_preview, "display_rows": display_rows, "suggestions": suggestions}
 
 
 @router.get('/db_info')

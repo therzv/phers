@@ -174,6 +174,64 @@ function addMessage(role, text, tablePreview) {
   }
   chatEl.appendChild(wrapper);
   chatEl.scrollTop = chatEl.scrollHeight;
+  return wrapper;
+}
+
+function parseSummary(summaryRaw){
+  if(!summaryRaw) return '';
+  let s = summaryRaw.trim();
+  // strip fenced codeblocks
+  const codeMatch = s.match(/```(?:json)?\n?([\s\S]*?)```/i);
+  if(codeMatch){ s = codeMatch[1].trim(); }
+  // try parse JSON
+  try{
+    const obj = JSON.parse(s);
+    if(obj && obj.text) return obj.text;
+  }catch(e){}
+  // fallback: remove any surrounding backticks
+  s = s.replace(/^`+|`+$/g, '').trim();
+  return s;
+}
+
+async function renderAssistantResponse(resp, title){
+  // resp: { summary, table_preview, suggestions }
+  const summaryText = parseSummary(resp.summary || resp.text || '');
+  const wrapper = addMessage('assistant', title ? title + '\n' + summaryText : (summaryText || 'No summary'), resp.table_preview || resp.rows || []);
+  // suggestions
+  const suggestions = resp.suggestions || [];
+  if(suggestions && suggestions.length){
+    const chips = document.createElement('div');
+    chips.className = 'mt-2 flex gap-2 flex-wrap';
+    suggestions.forEach((s, idx)=>{
+      const btn = document.createElement('button');
+      btn.className = 'text-sm px-3 py-1 bg-slate-100 text-slate-700 rounded-full border';
+      const label = (s.candidates && s.candidates.length) ? `Did you mean "${s.candidates[0]}"?` : (s.original ? `Try "${s.original}"` : 'Try suggestion');
+      btn.innerText = label;
+      btn.addEventListener('click', async ()=>{
+        btn.disabled = true;
+        btn.innerText = 'Applying...';
+        try{
+          const sq = (s.suggested_sqls && s.suggested_sqls[0]) || s.suggested_sql || s.sql;
+          const r = await fetch('/execute_sql', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ sql: sq, question: (input.value||'') }) });
+          const d = await r.json();
+          if(!r.ok){
+            toast('Suggestion failed: ' + (d.detail || JSON.stringify(d)));
+            btn.disabled = false; btn.innerText = label;
+            return;
+          }
+          // render the response (natural language + preview)
+          await renderAssistantResponse(d, `Result for suggestion: ${label}`);
+        }catch(err){
+          toast('Suggestion request failed: ' + err);
+          btn.disabled = false; btn.innerText = label;
+        }
+      });
+      chips.appendChild(btn);
+    });
+    // append chips inside the same wrapper under the bubble
+    wrapper.appendChild(chips);
+    chatEl.scrollTop = chatEl.scrollHeight;
+  }
 }
 
 async function loadFiles() {
