@@ -1,5 +1,6 @@
 fastapi
 uvicorn
+python-multipart
 pandas
 ollama
 langchain>=0.3.27
@@ -8,6 +9,7 @@ langchain-ollama
 chromadb
 sentence-transformers
 sqlparse
+openpyxl
 
 # SQL backend
 SQLAlchemy

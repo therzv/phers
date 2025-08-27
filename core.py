@@ -210,11 +210,56 @@ def update_question_replacements():
 
 
 def normalize_question_text(q: str) -> str:
+    """Enhanced question normalization with better HR terminology mapping."""
     out = q
+    
+    # Apply existing regex replacements
     for cre, repl in QUESTION_REPLACEMENTS:
         out = cre.sub(repl, out)
+    
+    # Add HR-specific term mappings
+    hr_term_mappings = {
+        'assets': 'Asset ID',
+        'asset': 'Asset ID', 
+        'repair': 'In Repair',
+        'repairing': 'In Repair',
+        'broken': 'In Repair',
+        'active': 'Active',
+        'working': 'Active',
+        'disposed': 'Disposed',
+        'discarded': 'Disposed',
+        'deleted': 'Disposed',
+        'machinery': 'Machinery',
+        'equipment': 'IT Equipment',
+        'vehicles': 'Vehicle',
+        'vehicle': 'Vehicle',
+        'cars': 'Vehicle',
+        'real estate': 'Real Estate',
+        'property': 'Real Estate',
+        'properties': 'Real Estate',
+        'buildings': 'Real Estate',
+        'cost': 'Value ($)',
+        'costs': 'Value ($)',
+        'value': 'Value ($)',
+        'values': 'Value ($)',
+        'price': 'Value ($)',
+        'prices': 'Value ($)',
+        'worth': 'Value ($)',
+        'location': 'Location',
+        'locations': 'Location',
+        'site': 'Location',
+        'sites': 'Location',
+        'city': 'Location',
+        'cities': 'Location'
+    }
+    
     try:
         cand_map = {}
+        
+        # Add HR-specific mappings
+        cand_map.update(hr_term_mappings)
+        
+        # Add table and column mappings
         for tbl, mapping in COLUMN_NAME_MAP.items():
             cand_map[tbl.lower()] = tbl
             for san, orig in mapping.items():
@@ -222,24 +267,30 @@ def normalize_question_text(q: str) -> str:
                     continue
                 cand_map[orig.lower()] = san
                 cand_map[orig.lower() + 's'] = san
-                for w in re.split(r"\s+", orig.lower()):
-                    if w:
+                # Split compound words and map them
+                for w in re.split(r"[^\w]+", orig.lower()):
+                    if w and len(w) > 2:
                         cand_map[w] = san
                         cand_map[w + 's'] = san
+        
+        # Enhanced tokenization and replacement
         tokens = re.split(r"(\W+)", out)
         for i, tok in enumerate(tokens):
-            lower = tok.lower()
+            lower = tok.lower().strip()
             if lower and lower.isalpha() and len(lower) > 2:
                 if lower in cand_map:
                     tokens[i] = cand_map[lower]
                 else:
+                    # Try fuzzy matching with higher cutoff for better precision
                     choices = list(cand_map.keys())
-                    matches = difflib.get_close_matches(lower, choices, n=1, cutoff=0.8)
+                    matches = difflib.get_close_matches(lower, choices, n=1, cutoff=0.75)
                     if matches:
                         tokens[i] = cand_map[matches[0]]
+        
         out = ''.join(tokens)
     except Exception:
         pass
+    
     return out
 
 
@@ -323,10 +374,15 @@ def validate_sql_against_schema(sql: str):
             # also allow table names to appear as identifiers in some expressions
             if ident.lower() in [t.lower() for t in TABLE_COLUMNS.keys()]:
                 continue
-            # not found -> gather suggestions
-            suggestions = difflib.get_close_matches(ident, list(all_cols_map.keys()), n=3, cutoff=0.6)
-            suggestion_text = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
-            raise Exception(f"SQL references unknown column or identifier: {ident}.{suggestion_text}")
+            # not found -> gather suggestions using our enhanced function
+            suggestions = suggest_column_alternatives(ident)
+            if suggestions:
+                suggestion_text = f" Did you mean: {', '.join(suggestions)}?"
+            else:
+                # Fallback to original logic
+                suggestions = difflib.get_close_matches(ident, list(all_cols_map.keys()), n=3, cutoff=0.6)
+                suggestion_text = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+            raise Exception(f"Column '{ident}' not found.{suggestion_text}")
 
         return True
     except Exception:
@@ -596,27 +652,34 @@ def auto_quote_string_literals(sql: str) -> str:
     return sql
 
 
-SQL_PROMPT_TEMPLATE = '''You are a strict SQL generator. The user will ask a question to query HR tables.
+SQL_PROMPT_TEMPLATE = '''You are an expert SQL generator for HR data queries. Generate precise SQL for business questions.
+
 Available schema (tables and columns):
 {schema}
 
 INSTRUCTIONS (critical - follow exactly):
 1. Produce a single, valid SQLite SELECT statement that answers the user's question.
 2. Use the exact table names and column names shown above.
-3. Do NOT invent columns, tables, or data.
-4. Do NOT include any comments, explanation, or extra text.
-5. Output ONLY the SQL inside a <SQL>...</SQL> tag, and nothing else.
-6. The SQL must be a single SELECT statement (no semicolons).
-7. Keep result columns concise (select only needed columns).
+3. For counting questions, use COUNT(*) or COUNT(column_name).
+4. For status/category filters, use exact string matching with proper quotes.
+5. For aggregations, use appropriate functions (COUNT, SUM, AVG, MIN, MAX).
+6. Handle common HR terms:
+   - "how many" = COUNT(*)
+   - "total value/cost" = SUM(value_column)
+   - "in repair/active/disposed" = WHERE status = 'Status'
+   - "by location/category" = GROUP BY column
+7. Use LIKE for partial text matching when appropriate.
+8. Output ONLY the SQL inside <SQL>...</SQL> tags, nothing else.
 
-User question:
-"""
-{question}
-"""
+User question: "{question}"
 
-Remember: return ONLY:
-<SQL>SELECT ...</SQL>
-'''
+Common query patterns:
+- Count: SELECT COUNT(*) FROM table WHERE condition
+- Sum: SELECT SUM(column) FROM table WHERE condition  
+- Group: SELECT column, COUNT(*) FROM table GROUP BY column
+- Filter: SELECT * FROM table WHERE column = 'value'
+
+<SQL>SELECT ...</SQL>'''
 
 
 SUMMARY_PROMPT_TEMPLATE = """You are a concise summarizer. I will provide:
@@ -637,6 +700,67 @@ sql: {sql}
 rows_json: {rows_json}
 ---
 """
+
+
+def suggest_column_alternatives(invalid_column: str, table_name: str = None) -> List[str]:
+    """Suggest column alternatives when a column is not found."""
+    suggestions = []
+    
+    # Get all available columns
+    all_cols = []
+    if table_name and table_name in TABLE_COLUMNS:
+        all_cols = TABLE_COLUMNS[table_name]
+    else:
+        # Get columns from all tables
+        for cols in TABLE_COLUMNS.values():
+            all_cols.extend(cols)
+    
+    # Get original column names too
+    if table_name and table_name in COLUMN_NAME_MAP:
+        mapping = COLUMN_NAME_MAP[table_name]
+        for sanitized, original in mapping.items():
+            if original and original not in all_cols:
+                all_cols.append(original)
+    else:
+        # Get original names from all tables
+        for mapping in COLUMN_NAME_MAP.values():
+            for sanitized, original in mapping.items():
+                if original and original not in all_cols:
+                    all_cols.append(original)
+    
+    # Find close matches
+    matches = difflib.get_close_matches(invalid_column.lower(), 
+                                      [col.lower() for col in all_cols], 
+                                      n=3, cutoff=0.4)
+    
+    # Convert back to original case
+    lower_to_orig = {col.lower(): col for col in all_cols}
+    suggestions = [lower_to_orig[match] for match in matches if match in lower_to_orig]
+    
+    # Add some common HR term suggestions if no good matches
+    if not suggestions:
+        hr_suggestions = {
+            'asset': ['Asset ID'],
+            'id': ['Asset ID'], 
+            'status': ['Status'],
+            'state': ['Status'],
+            'condition': ['Status'],
+            'type': ['Category'],
+            'category': ['Category'],
+            'kind': ['Category'],
+            'cost': ['Value ($)'],
+            'price': ['Value ($)'],
+            'value': ['Value ($)'],
+            'location': ['Location'],
+            'place': ['Location'],
+            'site': ['Location']
+        }
+        
+        for term, cols in hr_suggestions.items():
+            if term in invalid_column.lower():
+                suggestions.extend([col for col in cols if col in all_cols])
+    
+    return suggestions[:3]  # Return top 3 suggestions
 
 
 def score_candidate_tables(question: str) -> List[Dict[str, Any]]:

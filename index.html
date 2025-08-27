@@ -73,16 +73,35 @@
       <!-- Middle: chat -->
   <div class="col-span-2 glass rounded-xl p-5 shadow flex flex-col">
         <div class="flex items-center justify-between mb-4">
-          <h1 class="text-2xl font-bold">HR Data Chat</h1>
-          <div class="text-sm text-slate-500">Ask in natural language — answers based on uploaded documents</div>
+          <div>
+            <h1 class="text-2xl font-bold text-slate-800">HR Data Chat</h1>
+            <p class="text-sm text-slate-600 mt-1">Ask natural questions about your HR data</p>
+          </div>
+          <div class="text-right">
+            <div class="text-sm text-slate-500">Powered by Ollama + Phi4</div>
+            <div id="llmStatus" class="text-xs text-emerald-600">🟢 AI Ready</div>
+          </div>
         </div>
 
         <div id="chat" class="flex-1 overflow-auto p-4 space-y-3 bg-gradient-to-b from-white to-slate-50 rounded border"></div>
 
-        <form id="form" class="mt-4 flex gap-2">
-          <input id="input" type="text" placeholder="Ask about headcount, assets, or people..." class="flex-1 px-4 py-3 rounded border" />
-          <button type="submit" class="bg-emerald-600 text-white px-4 py-3 rounded">Send</button>
-        </form>
+        <div class="mt-4">
+          <!-- Example questions -->
+          <div id="exampleQuestions" class="mb-3 flex flex-wrap gap-2">
+            <button class="example-q px-3 py-1 bg-slate-100 text-slate-700 rounded-full text-sm hover:bg-slate-200 transition-colors" data-question="How many assets are in repair status?">How many assets are in repair?</button>
+            <button class="example-q px-3 py-1 bg-slate-100 text-slate-700 rounded-full text-sm hover:bg-slate-200 transition-colors" data-question="What is the total value of all machinery?">Total machinery value?</button>
+            <button class="example-q px-3 py-1 bg-slate-100 text-slate-700 rounded-full text-sm hover:bg-slate-200 transition-colors" data-question="Show me all assets in Seattle">Assets in Seattle?</button>
+            <button class="example-q px-3 py-1 bg-slate-100 text-slate-700 rounded-full text-sm hover:bg-slate-200 transition-colors" data-question="Count assets by category">Assets by category?</button>
+          </div>
+          
+          <form id="form" class="flex gap-2">
+            <input id="input" type="text" placeholder="Ask about assets, values, locations, status..." class="flex-1 px-4 py-3 rounded-lg border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 outline-none" />
+            <button type="submit" id="sendBtn" class="bg-emerald-600 text-white px-6 py-3 rounded-lg hover:bg-emerald-700 transition-colors font-medium">
+              <span class="send-text">Ask AI</span>
+              <span class="loading-text hidden">...</span>
+            </button>
+          </form>
+        </div>
       </div>
     </div>
   </div>
@@ -121,6 +140,31 @@ const cancelSql = document.getElementById('cancelSql');
 const runSql = document.getElementById('runSql');
 const chooserList = document.getElementById('chooserList');
 const activityFeed = document.getElementById('activityFeed');
+const sendBtn = document.getElementById('sendBtn');
+const sendText = sendBtn.querySelector('.send-text');
+const loadingText = sendBtn.querySelector('.loading-text');
+
+// Handle example question clicks
+document.querySelectorAll('.example-q').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const question = btn.dataset.question;
+    input.value = question;
+    form.dispatchEvent(new Event('submit'));
+  });
+});
+
+function setLoading(loading) {
+  sendBtn.disabled = loading;
+  if (loading) {
+    sendText.classList.add('hidden');
+    loadingText.classList.remove('hidden');
+    sendBtn.classList.add('opacity-75');
+  } else {
+    sendText.classList.remove('hidden');
+    loadingText.classList.add('hidden');
+    sendBtn.classList.remove('opacity-75');
+  }
+}
 
 function toast(msg){
   const t = document.createElement('div');
@@ -373,14 +417,22 @@ form.addEventListener('submit', async (e)=>{
   e.preventDefault();
   const q = input.value.trim();
   if (!q) return;
+  
+  setLoading(true);
   addMessage('user', q);
   input.value = '';
-  addMessage('assistant', 'Searching your data and composing an answer...');
+  
+  const thinkingMsg = addMessage('assistant', '🤔 Analyzing your question and searching the data...');
+  
   try {
     const res = await fetch('/chat', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ question: q }) });
     const data = await res.json();
+    // Remove thinking message
+    thinkingMsg.remove();
+    
     if (!res.ok) {
-      addMessage('assistant', 'Error: ' + (data.detail || JSON.stringify(data)));
+      addMessage('assistant', '❌ Error: ' + (data.detail || JSON.stringify(data)));
+      setLoading(false);
       return;
     }
     // if no inferred tables and no suggestions, ask server for candidate files when ambiguous
@@ -426,34 +478,60 @@ form.addEventListener('submit', async (e)=>{
       await renderAssistantResponse(data);
       return;
     }
-    // show SQL preview modal
-    sqlText.innerText = data.sql || '';
-    sqlSuggestions.innerText = data.suggestions && data.suggestions.length ? ('Suggestions: ' + data.suggestions.join(' | ')) : '';
-    sqlInferred.innerText = data.inferred_tables && data.inferred_tables.length ? ('Likely tables: ' + data.inferred_tables.join(', ')) : '';
-    sqlModal.classList.remove('hidden');
-    // attach run handler (one-time)
-    const runHandler = async ()=>{
-      sqlModal.classList.add('hidden');
-      addMessage('assistant', 'Running SQL...');
-      try {
-        const r2 = await fetch('/execute_sql', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ sql: data.sql, question: q }) });
-        const res2 = await r2.json();
-        if (!r2.ok) {
-          addMessage('assistant', 'Execution error: ' + (res2.detail || JSON.stringify(res2)));
+    // Automatically run the generated SQL and show a natural-language result + suggestions.
+    // Keep the SQL preview modal as a manual "Show SQL" option.
+    try{
+      const executingMsg = addMessage('assistant', '⚡ Running SQL and composing an answer...');
+      const exec = await fetch('/execute_sql', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ sql: data.sql, question: q }) });
+      executingMsg.remove();
+      const execData = await exec.json();
+      if (!exec.ok) {
+        // if server complains about unknown table, offer candidate chooser
+        if (exec.status === 400 && execData && execData.detail && exec.headers.get('X-Candidates')) {
+          try{
+            const candidates = JSON.parse(exec.headers.get('X-Candidates'));
+            // show chooser UI
+            chooserList.innerHTML = '';
+            candidates.forEach(c=>{
+              const el = document.createElement('div');
+              el.className='p-2 border rounded flex items-center justify-between';
+              el.innerHTML = `<div><div class="font-medium">${c.filename}</div><div class="text-xs text-slate-500">table: ${c.table}</div></div>`;
+              const btn = document.createElement('button');
+              btn.className='px-2 py-1 bg-indigo-600 text-white rounded';
+              btn.innerText='Use this file';
+              btn.addEventListener('click', ()=>{
+                chooser.classList.add('hidden');
+                input.value = q + ` in file ${c.filename}`;
+                form.dispatchEvent(new Event('submit'));
+              });
+              el.appendChild(btn);
+              chooserList.appendChild(el);
+            });
+            chooser.classList.remove('hidden');
+          }catch(e){
+            addMessage('assistant', 'Execution error: ' + (execData.detail || JSON.stringify(execData)));
+          }
         } else {
-          addMessage('assistant', res2.summary || 'No summary', res2.table_preview || []);
+          addMessage('assistant', '❌ Execution error: ' + (execData.detail || JSON.stringify(execData)));
         }
-      } catch (err) {
-        addMessage('assistant', 'Execution request failed: ' + err);
+      } else {
+        // render natural-language summary + preview + suggestions
+        await renderAssistantResponse(execData);
       }
-      runSql.removeEventListener('click', runHandler);
-      cancelSql.removeEventListener('click', cancelHandler);
-    };
-    const cancelHandler = ()=>{ sqlModal.classList.add('hidden'); runSql.removeEventListener('click', runHandler); cancelSql.removeEventListener('click', cancelHandler); };
-    runSql.addEventListener('click', runHandler);
-    cancelSql.addEventListener('click', cancelHandler);
+      // still populate SQL preview modal content for transparency; user can open it manually
+      sqlText.innerText = data.sql || '';
+      sqlSuggestions.innerText = data.suggestions && data.suggestions.length ? ('Suggestions: ' + data.suggestions.join(' | ')) : '';
+      sqlInferred.innerText = data.inferred_tables && data.inferred_tables.length ? ('Likely tables: ' + data.inferred_tables.join(', ')) : '';
+    }catch(err){
+      addMessage('assistant', '❌ Execution request failed: ' + err);
+      // fallback to showing SQL modal so user can run manually
+      sqlText.innerText = data.sql || '';
+      sqlModal.classList.remove('hidden');
+    }
   } catch (err) {
-    addMessage('assistant', 'Request failed: ' + err);
+    addMessage('assistant', '❌ Request failed: ' + err);
+  } finally {
+    setLoading(false);
   }
 });
 

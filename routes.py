@@ -14,7 +14,7 @@ from core import (
     score_candidate_tables, normalize_question_text, build_schema_description,
     SQL_PROMPT_TEMPLATE, validate_sql_safe, validate_sql_against_schema,
     get_llm, PANDAS_AI_AVAILABLE, PANDASAI_LANGCHAIN_AVAILABLE, PandasAI, LangChain,
-    SQLPARSE_AVAILABLE, read_table_into_df, drop_table
+    SQLPARSE_AVAILABLE, read_table_into_df, drop_table, suggest_column_alternatives
 )
 from core import conn, ENGINE, SUMMARY_PROMPT_TEMPLATE
 from sqlalchemy import text
