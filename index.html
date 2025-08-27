@@ -375,7 +375,7 @@ form.addEventListener('submit', async (e)=>{
   if (!q) return;
   addMessage('user', q);
   input.value = '';
-  addMessage('assistant', 'Generating SQL preview...');
+  addMessage('assistant', 'Searching your data and composing an answer...');
   try {
     const res = await fetch('/chat', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ question: q }) });
     const data = await res.json();
@@ -421,7 +421,9 @@ form.addEventListener('submit', async (e)=>{
 
     // If server returned no SQL (pandas-ai / dataframe-first flow), show the summary directly
     if (!data.sql) {
-      addMessage('assistant', data.summary || 'No summary', data.table_preview || []);
+      // pandas-ai or direct summary path
+      // render natural summary and preview
+      await renderAssistantResponse(data);
       return;
     }
     // show SQL preview modal

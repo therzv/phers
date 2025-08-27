@@ -291,6 +291,13 @@ async def execute_sql(req: dict):
     question = (req.get('question') or '').strip()
     if not sql:
         raise HTTPException(status_code=400, detail="Empty SQL.")
+    # quick check: ensure the SQL references at least one known uploaded table
+    used_tables = [t for t in TABLE_COLUMNS.keys() if re.search(r"\b" + re.escape(t) + r"\b", sql, flags=re.IGNORECASE)]
+    if not used_tables:
+        # offer candidate files/tables to the UI so it can suggest choices
+        candidates = score_candidate_tables(question or sql)
+        # return a friendly error with candidates (UI will render suggestions)
+        raise HTTPException(status_code=400, detail="No known table referenced in the SQL.", headers={"X-Candidates": json.dumps(candidates)})
     # safety checks
     validate_sql_safe(sql)
     if SQLPARSE_AVAILABLE:
