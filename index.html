@@ -186,6 +186,30 @@ async function loadFiles() {
   el.className = 'p-2 border rounded flex flex-col gap-2';
   el.innerHTML = `<div class="flex items-center justify-between"><div><div class="font-medium">${f.filename}</div><div class="text-xs text-slate-500">table: ${f.table}</div></div></div><div class="w-full bg-slate-100 rounded h-2 overflow-hidden"><div id="bar-${f.filename}" class="h-2 bg-emerald-400" style="width:0%"></div></div>`;
       const actions = document.createElement('div');
+      // preview button
+      const prev = document.createElement('button');
+      prev.className = 'text-slate-700 px-2 py-1 rounded border mr-2 bg-white hover:bg-slate-50';
+      prev.innerText = 'Preview';
+      prev.addEventListener('click', async ()=>{
+        prev.disabled = true;
+        prev.innerText = 'Loading...';
+        try{
+          const sql = `SELECT * FROM "${f.table}" LIMIT 10`;
+          const r = await fetch('/execute_sql', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ sql: sql, question: `Preview ${f.table}` }) });
+          const d = await r.json();
+          if (!r.ok){
+            toast('Preview failed: ' + (d.detail || JSON.stringify(d)));
+          } else {
+            // show preview in chat as assistant message
+            addMessage('assistant', `Preview of ${f.filename}`, d.table_preview || d.rows || []);
+          }
+        }catch(e){
+          toast('Preview request failed: ' + e);
+        }
+        prev.disabled = false;
+        prev.innerText = 'Preview';
+      });
+      actions.appendChild(prev);
       // delete button
       const del = document.createElement('button');
       del.className = 'text-red-600 px-2 py-1 rounded border';
