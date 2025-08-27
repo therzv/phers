@@ -41,6 +41,11 @@
       <!-- Left: upload & files -->
       <div class="col-span-1 glass rounded-xl p-5 shadow">
         <h2 class="text-lg font-semibold mb-3">Documents</h2>
+        <div id="dbInfo" class="mb-3 text-xs text-slate-600">
+          <div class="font-medium">Database</div>
+          <div id="dbPath">No DB</div>
+          <div id="dbTables" class="mt-1"></div>
+        </div>
         <div class="mb-3">
           <input id="fileInput" type="file" accept=".csv,.xlsx,.xls" class="block w-full text-sm text-slate-600" multiple />
           <div class="flex mt-2 gap-2">
@@ -237,6 +242,15 @@ async function loadFiles() {
         }
       })
       globalIndex.innerText = anyIndexing ? 'Indexing in progress...' : 'Index: idle';
+    }catch(e){/* ignore */}
+    // fetch db info
+    try{
+      const db = await fetch('/db_info');
+      const d = await db.json();
+      const dbPathEl = document.getElementById('dbPath');
+      const dbTablesEl = document.getElementById('dbTables');
+      if (d.db_path) dbPathEl.innerText = d.db_path;
+      dbTablesEl.innerHTML = d.tables && d.tables.length ? ('Tables: ' + d.tables.join(', ')) : 'No tables';
     }catch(e){/* ignore */}
   } catch (e) {
     filesList.innerText = 'Failed to load files';

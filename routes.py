@@ -16,6 +16,8 @@ from core import (
     get_llm, PANDAS_AI_AVAILABLE, PANDASAI_LANGCHAIN_AVAILABLE, PandasAI, LangChain,
     SQLPARSE_AVAILABLE, read_table_into_df, drop_table
 )
+from core import conn, ENGINE, SUMMARY_PROMPT_TEMPLATE
+from sqlalchemy import text
 import threading
 import re
 import sys
@@ -281,3 +283,82 @@ async def debug_sql(question: str):
         return {"raw_sql": raw_sql, "sanitized_sql": sanitized, "llm_response": llm_response}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post('/execute_sql')
+async def execute_sql(req: dict):
+    sql = (req.get('sql') or '').strip()
+    question = (req.get('question') or '').strip()
+    if not sql:
+        raise HTTPException(status_code=400, detail="Empty SQL.")
+    # safety checks
+    validate_sql_safe(sql)
+    if SQLPARSE_AVAILABLE:
+        validate_sql_against_schema(sql)
+
+    try:
+        if ENGINE is not None:
+            # pandas accepts SQLAlchemy engine
+            df = pd.read_sql_query(sql, ENGINE)
+        elif conn is not None:
+            df = pd.read_sql_query(sql, conn)
+        else:
+            raise Exception('No database engine available')
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"SQL execution error: {e}")
+
+    rows = df.to_dict(orient='records')
+
+    # Summarize the rows with the LLM if available
+    summary_text = ""
+    table_preview = rows[:10]
+    try:
+        summary_prompt = SUMMARY_PROMPT_TEMPLATE.format(question=question or sql, sql=sql, rows_json=json.dumps(rows[:200], default=str))
+        summary_llm = get_llm()
+        summary_resp = summary_llm.predict(summary_prompt)
+        try:
+            parsed = json.loads(summary_resp)
+            summary_text = parsed.get('text', '')
+            table_preview = parsed.get('table_preview', table_preview)
+        except Exception:
+            summary_text = summary_resp.strip()
+    except Exception:
+        summary_text = ""
+
+    # Map sanitized column names back to original for display
+    display_rows = []
+    if rows:
+        inferred_table = None
+        for t in TABLE_COLUMNS.keys():
+            if t.lower() in sql.lower():
+                inferred_table = t
+                break
+        col_map = COLUMN_NAME_MAP.get(inferred_table, {}) if inferred_table else {}
+        for r in rows:
+            mapped = {}
+            for k, v in r.items():
+                mapped[col_map.get(k, k)] = v
+            display_rows.append(mapped)
+    else:
+        display_rows = rows
+
+    return {"sql": sql, "rows": rows, "summary": summary_text or (f"{len(rows)} rows returned."), "table_preview": table_preview, "display_rows": display_rows}
+
+
+@router.get('/db_info')
+async def db_info():
+    """Return DB file and list of tables (if using sqlite)."""
+    db_path = os.path.join(DATA_DIR, 'phers.db')
+    tables = []
+    try:
+        if ENGINE is not None:
+            with ENGINE.connect() as cx:
+                res = cx.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
+                tables = [r[0] for r in res.fetchall()]
+        elif conn is not None:
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = [r[0] for r in cur.fetchall()]
+    except Exception:
+        tables = []
+    return {"db_path": db_path, "tables": tables}
