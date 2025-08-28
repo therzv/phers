@@ -649,8 +649,8 @@ def validate_sql_safe(sql: str):
     if any(k in s_lower for k in forbidden):
         raise HTTPException(status_code=400, detail="Only read (SELECT) queries are allowed.")
     
-    # More lenient character validation (allow more SQL characters)
-    if not re.match(r"^[\s\w\d\.\,\*\(\)=<>!\"'%\-\+\/\[\]_]+$", s):
+    # More lenient character validation (allow more SQL characters including backticks)
+    if not re.match(r"^[\s\w\d\.\,\*\(\)=<>!\"'%\-\+\/\[\]_`]+$", s):
         raise HTTPException(status_code=400, detail="SQL contains unexpected characters.")
     
     return s  # Return the cleaned SQL
