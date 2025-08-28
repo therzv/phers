@@ -769,34 +769,52 @@ uploadBtn.addEventListener('click', async ()=>{
       const data = await res.json();
       
       if (res.ok) {
+        // Debug log to see what we received
+        console.log('Upload response:', data);
+        
         // If sanitation was performed, show the modal
         if (data.sanitized && data.sanitation_report) {
           const fileSize = `${(file.size / 1024).toFixed(1)} KB`;
           
-          // Show sanitation modal with animated steps
-          showSanitationModal(file.name, fileSize, `${data.sanitation_report.rows_processed} rows`);
-          
-          // Animate the steps
-          updateSanitationStep('columns', 'processing');
-          await new Promise(resolve => setTimeout(resolve, 400));
-          updateSanitationStep('columns', 'completed');
-          
-          updateSanitationStep('data', 'processing');
-          await new Promise(resolve => setTimeout(resolve, 300));
-          updateSanitationStep('data', 'completed');
-          
-          updateSanitationStep('indexing', 'processing');
-          await new Promise(resolve => setTimeout(resolve, 400));
-          updateSanitationStep('indexing', 'completed');
-          
-          // Show results
-          showSanitationResults(data.sanitation_report);
-          uploadStatus.innerText = `Processed: ${file.name} (issues found and fixed)`;
-          toast(`✨ ${file.name} processed - data cleaned for optimal performance!`);
+          try {
+            // Show sanitation modal with animated steps
+            showSanitationModal(file.name, fileSize, `${data.sanitation_report.rows_processed} rows`);
+            
+            // Animate the steps
+            updateSanitationStep('columns', 'processing');
+            await new Promise(resolve => setTimeout(resolve, 400));
+            updateSanitationStep('columns', 'completed');
+            
+            updateSanitationStep('data', 'processing');
+            await new Promise(resolve => setTimeout(resolve, 300));
+            updateSanitationStep('data', 'completed');
+            
+            updateSanitationStep('indexing', 'processing');
+            await new Promise(resolve => setTimeout(resolve, 400));
+            updateSanitationStep('indexing', 'completed');
+            
+            // Show results
+            showSanitationResults(data.sanitation_report);
+            uploadStatus.innerText = `Processed: ${file.name} (issues found and fixed)`;
+            
+            // Safe toast call
+            try {
+              toast(`✨ ${file.name} processed - data cleaned for optimal performance!`);
+            } catch (toastErr) {
+              console.log('Toast failed:', toastErr);
+            }
+          } catch (modalErr) {
+            console.log('Sanitation modal failed:', modalErr);
+            uploadStatus.innerText = `Uploaded: ${file.name} (cleaned)`;
+          }
         } else {
           // Normal upload without sanitation
           uploadStatus.innerText = `Uploaded: ${file.name}`;
-          toast(`✅ ${file.name} uploaded successfully!`);
+          try {
+            toast(`✅ ${file.name} uploaded successfully!`);
+          } catch (toastErr) {
+            console.log('Toast failed:', toastErr);
+          }
         }
       } else {
         uploadStatus.innerText = 'Upload error: ' + (data.detail || JSON.stringify(data));
