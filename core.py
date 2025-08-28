@@ -1242,3 +1242,132 @@ def score_candidate_tables(question: str) -> List[Dict[str, Any]]:
 
     candidates.sort(key=lambda x: x['score'], reverse=True)
     return candidates
+
+
+def generate_smart_suggestions(question: str, sql: str, inferred_tables: List[str]) -> List[Dict[str, Any]]:
+    """
+    Generate intelligent AI suggestions when no results are found.
+    Analyzes user intent and actual data to provide helpful suggestions.
+    """
+    suggestions = []
+    
+    try:
+        # Pattern 1: Asset tag queries
+        asset_tag_match = re.search(r"asset.*tag.*([A-Z0-9-]+)", question, re.IGNORECASE)
+        if asset_tag_match:
+            searched_tag = asset_tag_match.group(1)
+            
+            # Find tables with Asset_TAG column
+            asset_tables = []
+            for table_name, columns in TABLE_COLUMNS.items():
+                if 'Asset_TAG' in columns:
+                    asset_tables.append(table_name)
+            
+            if asset_tables:
+                target_table = asset_tables[0]  # Use first available asset table
+                
+                # Find similar asset tags in the database
+                try:
+                    if ENGINE is not None:
+                        with ENGINE.connect() as cx:
+                            res = cx.execute(text(f'SELECT DISTINCT "Asset_TAG" FROM "{target_table}" WHERE "Asset_TAG" IS NOT NULL LIMIT 100'))
+                            all_tags = [r[0] for r in res.fetchall() if r[0]]
+                    elif conn is not None:
+                        cur = conn.cursor()
+                        cur.execute(f'SELECT DISTINCT "Asset_TAG" FROM "{target_table}" WHERE "Asset_TAG" IS NOT NULL LIMIT 100')
+                        all_tags = [r[0] for r in cur.fetchall() if r[0]]
+                    else:
+                        all_tags = []
+                        
+                    # Find close matches
+                    if all_tags:
+                        close_matches = difflib.get_close_matches(searched_tag, all_tags, n=3, cutoff=0.6)
+                        for match in close_matches:
+                            suggestions.append({
+                                "type": "asset_tag_correction",
+                                "original": searched_tag,
+                                "suggested": match,
+                                "label": f'Did you mean "{match}"?',
+                                "suggested_sqls": [f'SELECT * FROM "{target_table}" WHERE "Asset_TAG" = \'{match}\''],
+                                "icon": "🏷️"
+                            })
+                        
+                        # If no close matches, suggest browsing all assets
+                        if not close_matches:
+                            suggestions.append({
+                                "type": "browse_assets",
+                                "label": "Browse all asset tags",
+                                "suggested_sqls": [f'SELECT "Asset_TAG", "Manufacturer", "Model_name" FROM "{target_table}" ORDER BY "Asset_TAG"'],
+                                "icon": "📋"
+                            })
+                            
+                except Exception:
+                    pass
+        
+        # Pattern 2: Manufacturer queries  
+        manufacturer_match = re.search(r"(?:manufacturer|who made|made by)", question, re.IGNORECASE)
+        if manufacturer_match and not suggestions:
+            # Find tables with Manufacturer column
+            mfg_tables = []
+            for table_name, columns in TABLE_COLUMNS.items():
+                if 'Manufacturer' in columns:
+                    mfg_tables.append(table_name)
+                    
+            if mfg_tables:
+                target_table = mfg_tables[0]
+                
+                # Suggest browsing manufacturers
+                suggestions.append({
+                    "type": "browse_manufacturers", 
+                    "label": "Show all manufacturers",
+                    "suggested_sqls": [f'SELECT DISTINCT "Manufacturer", COUNT(*) as count FROM "{target_table}" GROUP BY "Manufacturer" ORDER BY count DESC'],
+                    "icon": "🏭"
+                })
+        
+        # Pattern 3: General search term extraction
+        if not suggestions:
+            # Extract potential search terms from the question
+            search_terms = re.findall(r'\b([A-Z]{2,}(?:-[A-Z0-9]+)*)\b', question)
+            search_terms += re.findall(r'\b([A-Za-z]{3,})\b', question)
+            
+            # Remove common words
+            common_words = {'what', 'is', 'the', 'of', 'this', 'that', 'are', 'where', 'how', 'many', 'who', 'when', 'why', 'which', 'asset', 'tag', 'manufacture', 'manufacturer'}
+            search_terms = [term for term in search_terms if term.lower() not in common_words and len(term) > 2]
+            
+            if search_terms and TABLE_COLUMNS:
+                # Use the first available table for general search
+                target_table = next(iter(TABLE_COLUMNS.keys()))
+                columns = TABLE_COLUMNS[target_table]
+                
+                # Build a general search query across text columns
+                text_columns = [col for col in columns if any(word in col.lower() for word in ['name', 'model', 'manufacturer', 'tag', 'description', 'category'])]
+                
+                if text_columns and search_terms:
+                    search_term = search_terms[0]
+                    where_conditions = []
+                    for col in text_columns[:3]:  # Limit to first 3 text columns
+                        where_conditions.append(f'"{col}" LIKE \'%{search_term}%\'')
+                    
+                    if where_conditions:
+                        where_clause = " OR ".join(where_conditions)
+                        suggestions.append({
+                            "type": "general_search",
+                            "label": f'Search for "{search_term}"',
+                            "suggested_sqls": [f'SELECT * FROM "{target_table}" WHERE {where_clause}'],
+                            "icon": "🔍"
+                        })
+        
+        # Fallback: Suggest exploring the data
+        if not suggestions and TABLE_COLUMNS:
+            target_table = next(iter(TABLE_COLUMNS.keys()))
+            suggestions.append({
+                "type": "explore_data",
+                "label": "Show sample data", 
+                "suggested_sqls": [f'SELECT * FROM "{target_table}" LIMIT 10'],
+                "icon": "📊"
+            })
+                
+    except Exception as e:
+        print(f"Error generating smart suggestions: {e}")
+    
+    return suggestions

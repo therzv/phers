@@ -15,7 +15,7 @@ from core import (
     SQL_PROMPT_TEMPLATE, validate_sql_safe, validate_sql_against_schema,
     get_llm, PANDAS_AI_AVAILABLE, PANDASAI_LANGCHAIN_AVAILABLE, PandasAI, LangChain,
     SQLPARSE_AVAILABLE, read_table_into_df, drop_table, suggest_column_alternatives,
-    get_active_files
+    get_active_files, generate_smart_suggestions
 )
 from core import conn, ENGINE, SUMMARY_PROMPT_TEMPLATE, reload_tables_from_database
 from sqlalchemy import text
@@ -316,17 +316,50 @@ async def chat(req: dict):
     normalized_q = normalize_question_text(question)
     schema = build_schema_description()
     sql_prompt = SQL_PROMPT_TEMPLATE.format(schema=schema, question=normalized_q)
-    try:
-        llm = get_llm()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"LLM not configured: {e}")
-    llm_response = llm.predict(sql_prompt)
-    if not llm_response:
-        raise HTTPException(status_code=500, detail="Empty LLM response.")
-    m = re.search(r"<SQL>(.*?)</SQL>", llm_response, flags=re.DOTALL | re.IGNORECASE)
-    if not m:
-        raise HTTPException(status_code=500, detail="LLM did not return SQL within <SQL> tags.")
-    sql = m.group(1).strip()
+    
+    # Add simple pattern matching for common queries before calling slow LLM
+    sql = None
+    
+    # Pattern: "what is the manufacture/manufacturer of asset tag X"
+    asset_tag_match = re.search(r"(?:manufacture|manufacturer).*asset.*tag.*([A-Z0-9-]+)", question, re.IGNORECASE)
+    if asset_tag_match:
+        asset_tag = asset_tag_match.group(1)
+        # Try to find the table with Asset_TAG column
+        target_table = None
+        for table_name, columns in TABLE_COLUMNS.items():
+            if 'Asset_TAG' in columns:
+                target_table = table_name
+                break
+        if target_table:
+            sql = f'SELECT * FROM "{target_table}" WHERE "Asset_TAG" = \'{asset_tag}\''
+    
+    # Pattern: "manufacturer of X" or "who made X"  
+    if not sql:
+        manufacturer_match = re.search(r"(?:manufacturer|made|who made).*?([A-Z0-9-]+)", question, re.IGNORECASE)
+        if manufacturer_match:
+            search_term = manufacturer_match.group(1)
+            # Find a table with Asset_TAG column and search for the term
+            target_table = None
+            for table_name, columns in TABLE_COLUMNS.items():
+                if 'Asset_TAG' in columns:
+                    target_table = table_name
+                    break
+            if target_table:
+                sql = f'SELECT * FROM "{target_table}" WHERE "Asset_TAG" LIKE \'%{search_term}%\' OR "Manufacturer" LIKE \'%{search_term}%\''
+    
+    # If no pattern matched, use LLM
+    if not sql:
+        try:
+            llm = get_llm()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"LLM not configured: {e}")
+        llm_response = llm.predict(sql_prompt)
+        if not llm_response:
+            raise HTTPException(status_code=500, detail="Empty LLM response.")
+        m = re.search(r"<SQL>(.*?)</SQL>", llm_response, flags=re.DOTALL | re.IGNORECASE)
+        if not m:
+            raise HTTPException(status_code=500, detail="LLM did not return SQL within <SQL> tags.")
+        sql = m.group(1).strip()
     # attempt to auto-quote unquoted textual literals (helps LLM outputs like: WHERE status = In Repair)
     try:
         from core import auto_quote_string_literals
@@ -559,99 +592,12 @@ async def execute_sql(req: dict):
     else:
         display_rows = rows
 
-    # If zero rows, try to suggest close matches for RHS literals in equality expressions
+    # If zero rows, generate intelligent AI suggestions based on user intent and actual data
     suggestions = []
     try:
         if not rows:
-            # find simple equality patterns like: column = 'value'
-            # handle double or single quotes
-            eqs = re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\b\s*=\s*'(.*?)'", sql, flags=re.IGNORECASE)
-            eqs += re.findall(r'\b([A-Za-z_][A-Za-z0-9_]*)\b\s*=\s*"(.*?)"', sql, flags=re.IGNORECASE)
-            # try for IN lists: col IN ('a','b')
-            in_matches = re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\b\s+IN\s*\((.*?)\)", sql, flags=re.IGNORECASE)
-            # infer table name from SQL text (best-effort)
-            inferred_table = None
-            for t in TABLE_COLUMNS.keys():
-                if t.lower() in sql.lower():
-                    inferred_table = t
-                    break
-            for col, val in eqs:
-                if not inferred_table:
-                    continue
-                # fetch distinct values for column
-                candidates = []
-                try:
-                    q = f'SELECT DISTINCT "{col}" as v FROM "{inferred_table}" WHERE "{col}" IS NOT NULL LIMIT 500'
-                    if ENGINE is not None:
-                        with ENGINE.connect() as cx:
-                            res = cx.execute(text(q))
-                            candidates = [ (r[0] if isinstance(r, (list, tuple)) else r) for r in res.fetchall() ]
-                    elif conn is not None:
-                        cur = conn.cursor()
-                        cur.execute(q)
-                        candidates = [r[0] for r in cur.fetchall()]
-                except Exception:
-                    candidates = []
-                # normalize and match
-                cand_strs = [str(c) for c in candidates if c is not None]
-                lower_map = {s.lower(): s for s in cand_strs}
-                import difflib as _dif
-                matches = _dif.get_close_matches(val.lower(), [s.lower() for s in cand_strs], n=5, cutoff=0.6)
-                matched = [lower_map[m] for m in matches if m in lower_map]
-                # also include exact case-insensitive matches
-                if val.lower() in lower_map and lower_map[val.lower()] not in matched:
-                    matched.insert(0, lower_map[val.lower()])
-                if matched:
-                    suggested_sqls = []
-                    for mv in matched:
-                        # create a suggested SQL by replacing the first occurrence of the literal (keep quotes)
-                        safe_mv = mv.replace("'","''")
-                        pattern = re.compile(r"(\b" + re.escape(col) + r"\b\s*=\s*)(?:'[^']*'|\"[^\"]*\")", flags=re.IGNORECASE)
-                        def _repl(m):
-                            return m.group(1) + "'" + safe_mv + "'"
-                        sug = pattern.sub(_repl, sql, count=1)
-                        # if the regex didn't replace (different quoting), try simple replace of the original value
-                        if sug == sql:
-                            sug = sql.replace("'"+val+"'", "'"+safe_mv+"'")
-                        suggested_sqls.append(sug)
-                    suggestions.append({"column": col, "original": val, "candidates": matched, "suggested_sqls": suggested_sqls})
-            # handle IN-list suggestions (simple: if any list item fuzzy-matches known values)
-            for col, list_body in in_matches:
-                if not inferred_table:
-                    continue
-                list_items = re.findall(r"'([^']*)'|\"([^\"]*)\"", list_body)
-                # flatten tuples
-                items = [a or b for a,b in list_items]
-                # fetch candidates as above
-                candidates = []
-                try:
-                    q = f'SELECT DISTINCT "{col}" as v FROM "{inferred_table}" WHERE "{col}" IS NOT NULL LIMIT 500'
-                    if ENGINE is not None:
-                        with ENGINE.connect() as cx:
-                            res = cx.execute(text(q))
-                            candidates = [ (r[0] if isinstance(r, (list, tuple)) else r) for r in res.fetchall() ]
-                    elif conn is not None:
-                        cur = conn.cursor()
-                        cur.execute(q)
-                        candidates = [r[0] for r in cur.fetchall()]
-                except Exception:
-                    candidates = []
-                cand_strs = [str(c) for c in candidates if c is not None]
-                import difflib as _dif
-                matched_map = {}
-                for it in items:
-                    matches = _dif.get_close_matches(it.lower(), [s.lower() for s in cand_strs], n=3, cutoff=0.6)
-                    matched = [ { 'original': it, 'matches': [ { 'value': (lambda m: ( [s for s in cand_strs if s.lower()==m][0] if any(s.lower()==m for s in cand_strs) else m ))(m) } for m in matches ] } ]
-                    if matched:
-                        matched_map[it] = matched
-                if matched_map:
-                    # produce a suggested SQL by replacing each original item with first matched candidate
-                    sug_sql = sql
-                    for it, ml in matched_map.items():
-                        first = ml[0]['matches'][0]['value']
-                        safe_mv = first.replace("'","''")
-                        sug_sql = sug_sql.replace("'"+it+"'", "'"+safe_mv+"'")
-                    suggestions.append({"column": col, "original_in_list": items, "candidates_map": matched_map, "suggested_sqls": [sug_sql]})
+            # Generate smart suggestions by analyzing the original question
+            suggestions = generate_smart_suggestions(question, sql, inferred_tables or [])
     except Exception:
         suggestions = []
 

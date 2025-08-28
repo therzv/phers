@@ -513,7 +513,11 @@ async function renderAssistantResponse(resp, title){
       let label = 'Try suggestion';
       let icon = '💡';
       
-      if (s.candidates && s.candidates.length) {
+      // Use the new smart suggestion format if available
+      if (s.label) {
+        label = s.label;
+        icon = s.icon || '💡';
+      } else if (s.candidates && s.candidates.length) {
         const candidate = s.candidates[0];
         if (candidate.includes('Asset')) {
           label = `Search in "${candidate}"`;
