@@ -78,12 +78,63 @@
     }
     
     /* Staggered animation for different containers */
+    .company-header {
+      animation-delay: -0.5s; /* Company header starts first */
+    }
+    
     .col-span-1.glass {
-      animation-delay: 0s;
+      animation-delay: 0.5s;
     }
     
     .col-span-2.glass {
       animation-delay: 1s;
+    }
+    
+    /* Special styling for company header */
+    .company-header {
+      background: rgba(255, 255, 255, 0.95);
+      border: 2px solid rgba(135, 206, 235, 0.2);
+    }
+    
+    .company-header:hover {
+      border-color: rgba(135, 206, 235, 0.4);
+    }
+    
+    /* Company logo container styling */
+    .company-logo-container {
+      position: relative;
+    }
+    
+    .company-logo-container::before {
+      content: '';
+      position: absolute;
+      top: -2px;
+      left: -2px;
+      right: -2px;
+      bottom: -2px;
+      background: linear-gradient(45deg, #87CEEB, #ADD8E6, #87CEFA, #B8E6FF);
+      border-radius: 14px;
+      z-index: -1;
+      animation: logoGlow 3s ease-in-out infinite;
+    }
+    
+    @keyframes logoGlow {
+      0%, 100% { opacity: 0.3; }
+      50% { opacity: 0.6; }
+    }
+    
+    /* Editable company name styling */
+    .company-name {
+      cursor: pointer;
+      transition: color 0.3s ease;
+    }
+    
+    .company-name:hover {
+      color: #0891b2;
+    }
+    
+    .company-tagline {
+      font-style: italic;
     }
     
     /* Enhanced hover effects */
@@ -127,9 +178,32 @@
 </head>
 <body>
   <div class="w-full max-w-6xl p-6">
-    <div class="flex items-center justify-end mb-3">
-      <div id="globalIndex" class="text-sm text-slate-600">Index: idle</div>
+    <!-- Company Branding Header -->
+    <div class="glass rounded-2xl p-6 mb-6 panel-floating company-header">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-4">
+          <!-- Company Logo Placeholder -->
+          <div class="company-logo-container">
+            <div class="w-16 h-16 bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl flex items-center justify-center shadow-lg">
+              <svg class="w-8 h-8 text-white" fill="currentColor" viewBox="0 0 20 20">
+                <path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3z"/>
+              </svg>
+            </div>
+          </div>
+          <!-- Company Info -->
+          <div>
+            <h1 class="company-name text-2xl font-bold text-slate-800 mb-1">Your Company Name</h1>
+            <p class="company-tagline text-sm text-slate-600">HR Data Intelligence Platform</p>
+          </div>
+        </div>
+        <!-- System Status -->
+        <div class="text-right">
+          <div id="globalIndex" class="text-sm text-slate-600 mb-1">Index: idle</div>
+          <div class="text-xs text-slate-500">Powered by AI</div>
+        </div>
+      </div>
     </div>
+    
     <div class="grid grid-cols-3 gap-6">
       <!-- Left: upload & files -->
       <div class="col-span-1 glass rounded-xl p-5 shadow panel-floating">
@@ -738,6 +812,42 @@ form.addEventListener('submit', async (e)=>{
     setLoading(false);
   }
 });
+
+// Company name editing functionality
+const companyName = document.querySelector('.company-name');
+const companyTagline = document.querySelector('.company-tagline');
+
+companyName.addEventListener('click', () => {
+  const currentName = companyName.innerText;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = currentName;
+  input.className = 'text-2xl font-bold text-slate-800 bg-transparent border-b-2 border-blue-400 outline-none';
+  input.style.width = '300px';
+  
+  companyName.parentNode.replaceChild(input, companyName);
+  input.focus();
+  input.select();
+  
+  const saveEdit = () => {
+    const newName = input.value.trim() || 'Your Company Name';
+    companyName.innerText = newName;
+    input.parentNode.replaceChild(companyName, input);
+    localStorage.setItem('companyName', newName);
+    toast(`Company name updated to: ${newName}`);
+  };
+  
+  input.addEventListener('blur', saveEdit);
+  input.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') saveEdit();
+  });
+});
+
+// Load saved company name
+const savedName = localStorage.getItem('companyName');
+if (savedName) {
+  companyName.innerText = savedName;
+}
 
 // initial load
 loadFiles();
