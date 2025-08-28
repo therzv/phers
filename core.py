@@ -778,9 +778,9 @@ INSTRUCTIONS (critical - follow exactly):
       - For searching "John Smith", use: Name LIKE '%John%' AND Name LIKE '%Smith%'
       - For searching "Benjamin Howard", use: Name LIKE '%Benjamin%' AND Name LIKE '%Howard%'
    b) Asset tags, IDs, or codes should use exact matching or LIKE:
-      - For "ASSET-VAF-HO-IV-124", use: `Asset TAG` = 'ASSET-VAF-HO-IV-124' 
-      - Or use: `Asset TAG` LIKE '%ASSET-VAF-HO-IV-124%'
-      - Note: Column names with spaces need backticks: `Asset TAG`
+      - For "ASSET-VAF-HO-IV-124", use: Asset_TAG = 'ASSET-VAF-HO-IV-124' 
+      - Or use: Asset_TAG LIKE '%ASSET-VAF-HO-IV-124%'
+      - Note: After sanitation, column names use underscores instead of spaces
    c) Always use LIKE with % wildcards for partial text searches
 8. Use LIKE for partial text matching when appropriate.
 9. Output ONLY the SQL inside <SQL>...</SQL> tags, nothing else.
@@ -793,7 +793,7 @@ Common query patterns:
 - Group: SELECT column, COUNT(*) FROM table GROUP BY column
 - Filter: SELECT * FROM table WHERE column = 'value'
 - Name search: SELECT * FROM table WHERE Name LIKE '%FirstName%' AND Name LIKE '%LastName%'
-- Asset/ID search: SELECT * FROM table WHERE `Asset TAG` = 'ASSET-123' OR `Asset TAG` LIKE '%ASSET-123%'
+- Asset/ID search: SELECT * FROM table WHERE Asset_TAG = 'ASSET-123' OR Asset_TAG LIKE '%ASSET-123%'
 
 <SQL>SELECT ...</SQL>'''
 
@@ -864,20 +864,20 @@ def suggest_column_alternatives(invalid_column: str, table_name: str = None) -> 
     if len(suggestions) < 3:
         semantic_map = {
             # Asset & Equipment terms (multiple variations)
-            'asset': ['Asset TAG', 'Asset ID', 'item Name', 'Model name'],
-            'assets': ['Asset TAG', 'Asset ID', 'item Name', 'Model name'],
-            'tag': ['Asset TAG', 'Asset ID', 'Serial number'],
-            'tags': ['Asset TAG', 'Asset ID', 'Serial number'],
-            'equipment': ['item Name', 'Category', 'Model name', 'Manufacturer'],
-            'device': ['item Name', 'Category', 'Model name', 'Manufacturer'],
-            'devices': ['item Name', 'Category', 'Model name', 'Manufacturer'],
+            'asset': ['Asset_TAG', 'item_Name', 'Model_name'],
+            'assets': ['Asset_TAG', 'item_Name', 'Model_name'],
+            'tag': ['Asset_TAG', 'Serial_number'],
+            'tags': ['Asset_TAG', 'Serial_number'],
+            'equipment': ['item_Name', 'Category', 'Model_name', 'Manufacturer'],
+            'device': ['item_Name', 'Category', 'Model_name', 'Manufacturer'],
+            'devices': ['item_Name', 'Category', 'Model_name', 'Manufacturer'],
             
             # Manufacturer variations
-            'manufacture': ['Manufacturer', 'Model name', 'item Name'],
-            'manufacturer': ['Manufacturer', 'Model name', 'item Name'],
-            'brand': ['Manufacturer', 'Model name', 'item Name'],
-            'make': ['Manufacturer', 'Model name', 'item Name'],
-            'made': ['Manufacturer', 'Model name'],
+            'manufacture': ['Manufacturer', 'Model_name', 'item_Name'],
+            'manufacturer': ['Manufacturer', 'Model_name', 'item_Name'],
+            'brand': ['Manufacturer', 'Model_name', 'item_Name'],
+            'make': ['Manufacturer', 'Model_name', 'item_Name'],
+            'made': ['Manufacturer', 'Model_name'],
             'company': ['Manufacturer', 'Company', 'Supplier'],
             
             # Location and company terms
@@ -888,13 +888,13 @@ def suggest_column_alternatives(invalid_column: str, table_name: str = None) -> 
             'building': ['Location', 'Company'],
             
             # Financial terms
-            'cost': ['Purchase Cost', 'Purchase Date', 'Supplier'],
-            'costs': ['Purchase Cost', 'Purchase Date', 'Supplier'],
-            'price': ['Purchase Cost', 'Purchase Date', 'Supplier'],
-            'value': ['Purchase Cost', 'Purchase Date'],
-            'money': ['Purchase Cost', 'Purchase Date'],
-            'bought': ['Purchase Cost', 'Purchase Date', 'Supplier'],
-            'purchased': ['Purchase Cost', 'Purchase Date', 'Supplier'],
+            'cost': ['Purchase_Cost', 'Supplier'],
+            'costs': ['Purchase_Cost', 'Supplier'],
+            'price': ['Purchase_Cost', 'Supplier'],
+            'value': ['Purchase_Cost'],
+            'money': ['Purchase_Cost'],
+            'bought': ['Purchase_Cost', 'Supplier'],
+            'purchased': ['Purchase_Cost', 'Supplier'],
             
             # Status and condition terms
             'status': ['Status', 'Warranty', 'Location'],
@@ -914,18 +914,18 @@ def suggest_column_alternatives(invalid_column: str, table_name: str = None) -> 
             'who': ['Username', 'Company'],
             
             # Product and model terms
-            'model': ['Model name', 'Model number', 'Manufacturer'],
-            'product': ['item Name', 'Model name', 'Category'],
-            'item': ['item Name', 'Category', 'Model name'],
-            'name': ['item Name', 'Model name', 'Username'],
-            'type': ['Category', 'item Name', 'Model name'],
-            'category': ['Category', 'item Name'],
+            'model': ['Model_name', 'Model_number', 'Manufacturer'],
+            'product': ['item_Name', 'Model_name', 'Category'],
+            'item': ['item_Name', 'Category', 'Model_name'],
+            'name': ['item_Name', 'Model_name', 'Username'],
+            'type': ['Category', 'item_Name', 'Model_name'],
+            'category': ['Category', 'item_Name'],
             
             # Technical identifiers
-            'serial': ['Serial number', 'Model number', 'Asset TAG'],
-            'number': ['Serial number', 'Model number', 'Asset TAG', 'Order Number'],
-            'id': ['Asset TAG', 'Serial number', 'Model number'],
-            'identifier': ['Asset TAG', 'Serial number', 'Model number'],
+            'serial': ['Serial_number', 'Model_number', 'Asset_TAG'],
+            'number': ['Serial_number', 'Model_number', 'Asset_TAG', 'Order_Number'],
+            'id': ['Asset_TAG', 'Serial_number', 'Model_number'],
+            'identifier': ['Asset_TAG', 'Serial_number', 'Model_number'],
         }
         
         for term, cols in semantic_map.items():

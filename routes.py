@@ -672,6 +672,11 @@ async def execute_sql(req: dict):
         
         return response_data
     except Exception as json_err:
+        # Log the error for debugging
+        import traceback
+        print(f"JSON serialization error in execute_sql: {json_err}")
+        print(f"Traceback: {traceback.format_exc()}")
+        
         # Fallback response if JSON serialization fails
         return {
             "sql": str(sql),
