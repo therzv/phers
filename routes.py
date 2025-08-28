@@ -597,20 +597,41 @@ async def execute_sql(req: dict):
     try:
         if not rows:
             # Generate smart suggestions by analyzing the original question
-            suggestions = generate_smart_suggestions(question, sql, inferred_tables or [])
-    except Exception:
+            # Get inferred tables from SQL or use empty list
+            inferred_from_sql = []
+            for t in TABLE_COLUMNS.keys():
+                if t.lower() in sql.lower():
+                    inferred_from_sql.append(t)
+            suggestions = generate_smart_suggestions(question, sql, inferred_from_sql)
+    except Exception as e:
+        print(f"Error generating suggestions: {e}")
         suggestions = []
 
     # Ensure all response data is JSON serializable
     try:
+        # Ensure suggestions are JSON serializable
+        safe_suggestions = []
+        for s in suggestions:
+            try:
+                safe_suggestion = {}
+                for key, value in s.items():
+                    if isinstance(value, (str, int, float, bool, list, dict, type(None))):
+                        safe_suggestion[key] = value
+                    else:
+                        safe_suggestion[key] = str(value)
+                safe_suggestions.append(safe_suggestion)
+            except Exception:
+                # Skip problematic suggestion
+                continue
+        
         response_data = {
             "sql": str(sql), 
             "rows": rows, 
             "summary": str(summary_text or f"{len(rows)} rows returned."), 
             "table_preview": table_preview, 
             "display_rows": display_rows, 
-            "suggestions": suggestions, 
-            "auto_fixed": bool(auto_fixed)
+            "suggestions": safe_suggestions, 
+            "auto_fixed": bool(auto_fixed if 'auto_fixed' in locals() else False)
         }
         
         # Test JSON serialization before returning
@@ -623,6 +644,7 @@ async def execute_sql(req: dict):
         import traceback
         print(f"JSON serialization error in execute_sql: {json_err}")
         print(f"Traceback: {traceback.format_exc()}")
+        print(f"Problematic suggestions: {suggestions}")
         
         # Fallback response if JSON serialization fails
         return {

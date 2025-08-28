@@ -1268,27 +1268,27 @@ def generate_smart_suggestions(question: str, sql: str, inferred_tables: List[st
                 
                 # Find similar asset tags in the database
                 try:
+                    all_tags = []
                     if ENGINE is not None:
                         with ENGINE.connect() as cx:
                             res = cx.execute(text(f'SELECT DISTINCT "Asset_TAG" FROM "{target_table}" WHERE "Asset_TAG" IS NOT NULL LIMIT 100'))
-                            all_tags = [r[0] for r in res.fetchall() if r[0]]
+                            all_tags = [str(r[0]) for r in res.fetchall() if r[0] is not None]
                     elif conn is not None:
                         cur = conn.cursor()
                         cur.execute(f'SELECT DISTINCT "Asset_TAG" FROM "{target_table}" WHERE "Asset_TAG" IS NOT NULL LIMIT 100')
-                        all_tags = [r[0] for r in cur.fetchall() if r[0]]
-                    else:
-                        all_tags = []
+                        all_tags = [str(r[0]) for r in cur.fetchall() if r[0] is not None]
                         
                     # Find close matches
                     if all_tags:
-                        close_matches = difflib.get_close_matches(searched_tag, all_tags, n=3, cutoff=0.6)
+                        close_matches = difflib.get_close_matches(str(searched_tag), all_tags, n=3, cutoff=0.6)
                         for match in close_matches:
+                            # Ensure all values are strings and JSON serializable
                             suggestions.append({
                                 "type": "asset_tag_correction",
-                                "original": searched_tag,
-                                "suggested": match,
-                                "label": f'Did you mean "{match}"?',
-                                "suggested_sqls": [f'SELECT * FROM "{target_table}" WHERE "Asset_TAG" = \'{match}\''],
+                                "original": str(searched_tag),
+                                "suggested": str(match),
+                                "label": f'Did you mean "{str(match)}"?',
+                                "suggested_sqls": [f'SELECT * FROM "{target_table}" WHERE "Asset_TAG" = \'{str(match)}\''],
                                 "icon": "🏷️"
                             })
                         
@@ -1301,8 +1301,15 @@ def generate_smart_suggestions(question: str, sql: str, inferred_tables: List[st
                                 "icon": "📋"
                             })
                             
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"Error in asset tag suggestions: {e}")
+                    # Fallback suggestion if database query fails
+                    suggestions.append({
+                        "type": "browse_assets",
+                        "label": "Browse all asset tags",
+                        "suggested_sqls": [f'SELECT "Asset_TAG", "Manufacturer", "Model_name" FROM "{target_table}" ORDER BY "Asset_TAG"'],
+                        "icon": "📋"
+                    })
         
         # Pattern 2: Manufacturer queries  
         manufacturer_match = re.search(r"(?:manufacturer|who made|made by)", question, re.IGNORECASE)
