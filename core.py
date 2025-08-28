@@ -313,9 +313,23 @@ def validate_sql_against_schema(sql: str):
             cleaned = sql
         txt = cleaned.lower()
 
-        # find mentioned tables (by sanitized table name)
-        used_tables = [t for t in TABLE_COLUMNS.keys() if re.search(r"\b" + re.escape(t.lower()) + r"\b", txt)]
+        # find mentioned tables (by sanitized table name) - check both quoted and unquoted forms
+        used_tables = []
+        for t in TABLE_COLUMNS.keys():
+            # Check for unquoted table name
+            if re.search(r"\b" + re.escape(t.lower()) + r"\b", txt):
+                used_tables.append(t)
+            # Check for quoted table name with double quotes
+            elif re.search(r"\"" + re.escape(t.lower()) + r"\"", txt):
+                used_tables.append(t)
+            # Check for quoted table name with backticks
+            elif re.search(r"`" + re.escape(t.lower()) + r"`", txt):
+                used_tables.append(t)
+                
         if not used_tables:
+            # More detailed error for debugging
+            print(f"SQL validation failed - no tables found in: {txt}")
+            print(f"Available tables: {list(TABLE_COLUMNS.keys())}")
             raise Exception("SQL references unknown tables.")
 
         candidates = set()

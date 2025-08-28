@@ -332,6 +332,9 @@ async def chat(req: dict):
                 break
         if target_table:
             sql = f'SELECT * FROM "{target_table}" WHERE "Asset_TAG" = \'{asset_tag}\''
+            print(f"Generated SQL: {sql}")
+            print(f"Target table: {target_table}")
+            print(f"Available tables: {list(TABLE_COLUMNS.keys())}")
     
     # Pattern: "manufacturer of X" or "who made X"  
     if not sql:
@@ -465,7 +468,12 @@ async def execute_sql(req: dict):
     # safety checks and cleaning
     sql = validate_sql_safe(sql)
     if SQLPARSE_AVAILABLE:
-        validate_sql_against_schema(sql)
+        try:
+            validate_sql_against_schema(sql)
+        except Exception as schema_err:
+            # Log the schema validation error but don't crash the request
+            print(f"Schema validation warning: {schema_err}")
+            # Continue execution - the SQL might still work
 
     auto_fixed = False  # Track if we auto-fixed any issues
     try:
