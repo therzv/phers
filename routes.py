@@ -520,26 +520,25 @@ async def execute_sql(req: dict):
     # Summarize the rows with the LLM if available
     summary_text = ""
     table_preview = rows[:10]
-    try:
-        # Safely serialize to JSON
-        rows_json = json.dumps(rows[:200], default=str, ensure_ascii=False)
-        summary_prompt = SUMMARY_PROMPT_TEMPLATE.format(question=question or sql, sql=sql, rows_json=rows_json)
-        summary_llm = get_llm()
-        if summary_llm:
-            summary_resp = summary_llm.predict(summary_prompt)
-            try:
-                parsed = json.loads(summary_resp)
-                summary_text = parsed.get('text', '')
-                table_preview = parsed.get('table_preview', table_preview)
-            except Exception:
-                # Clean the response to ensure it's safe for JSON
-                summary_text = str(summary_resp).strip()
-                # Remove any problematic characters that could break JSON
-                summary_text = summary_text.replace('"', "'").replace('\n', ' ').replace('\r', '')
-        else:
-            summary_text = f"Found {len(rows)} matching records."
-    except Exception:
-        summary_text = ""
+    
+    # TEMPORARY: Disable LLM summary to eliminate JSON errors
+    # Generate a simple, safe summary instead
+    if len(rows) == 1:
+        summary_text = f"Found 1 matching record."
+        if 'Manufacturer' in rows[0]:
+            summary_text = f"The manufacturer is: {rows[0]['Manufacturer']}"
+    elif len(rows) > 1:
+        summary_text = f"Found {len(rows)} matching records."
+        if 'Manufacturer' in rows[0]:
+            manufacturers = list(set(row.get('Manufacturer', 'Unknown') for row in rows[:5]))
+            if len(manufacturers) == 1:
+                summary_text = f"Found {len(rows)} records. The manufacturer is: {manufacturers[0]}"
+            else:
+                summary_text = f"Found {len(rows)} records with manufacturers: {', '.join(manufacturers[:3])}"
+    else:
+        summary_text = "No matching records found."
+    
+    # COMMENTED OUT: LLM summary was causing JSON errors - disabled temporarily
 
     # Map sanitized column names back to original for display
     display_rows = []

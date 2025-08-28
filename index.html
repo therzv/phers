@@ -305,8 +305,10 @@
   
   <!-- SQL Preview Modal -->
   <div id="sqlModal" class="fixed inset-0 hidden items-center justify-center z-50">
-    <div class="absolute inset-0 bg-black opacity-40"></div>
-    <div class="bg-white rounded-lg p-4 z-50 w-11/12 max-w-2xl panel-floating">
+    <div class="absolute inset-0 bg-black opacity-40" onclick="document.getElementById('cancelSql').click()"></div>
+    <div class="bg-white rounded-lg p-4 z-50 w-11/12 max-w-2xl panel-floating relative">
+      <!-- Close button -->
+      <button onclick="document.getElementById('cancelSql').click()" class="absolute top-2 right-2 text-gray-400 hover:text-gray-600 text-xl font-bold">&times;</button>
       <h3 class="font-semibold mb-2">Generated SQL (preview)</h3>
       <pre id="sqlText" class="bg-slate-50 p-3 rounded text-xs max-h-48 overflow-auto"></pre>
       <div id="sqlSuggestions" class="text-sm text-slate-600 mt-2"></div>
@@ -952,9 +954,11 @@ form.addEventListener('submit', async (e)=>{
       sqlInferred.innerText = data.inferred_tables && data.inferred_tables.length ? ('Likely tables: ' + data.inferred_tables.join(', ')) : '';
     }catch(err){
       addMessage('assistant', '❌ Execution request failed: ' + err);
-      // fallback to showing SQL modal so user can run manually
-      sqlText.innerText = data.sql || '';
-      sqlModal.classList.remove('hidden');
+      // Instead of showing modal, let's just show the error
+      console.error('Execution failed:', err);
+      // Only show SQL modal if user specifically requests it
+      // sqlText.innerText = data.sql || '';
+      // sqlModal.classList.remove('hidden');
     }
   } catch (err) {
     addMessage('assistant', '❌ Request failed: ' + err);
