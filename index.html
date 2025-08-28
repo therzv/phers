@@ -761,71 +761,53 @@ uploadBtn.addEventListener('click', async ()=>{
   uploadStatus.innerText = 'Uploading...';
   for (let i=0;i<files.length;i++){
     const file = files[i];
-    const fileSize = `${(file.size / 1024).toFixed(1)} KB`;
-    
-    // Show sanitation modal immediately
-    showSanitationModal(file.name, fileSize, 'Processing...');
-    
     const fd = new FormData();
     fd.append('file', file);
     
     try {
-      // Step 1: Column cleaning
-      updateSanitationStep('columns', 'processing');
-      await new Promise(resolve => setTimeout(resolve, 500)); // Visual delay
-      
       const res = await fetch('/upload', { method: 'POST', body: fd });
       const data = await res.json();
       
       if (res.ok) {
-        updateSanitationStep('columns', 'completed');
-        
-        // Step 2: Data cleaning  
-        updateSanitationStep('data', 'processing');
-        await new Promise(resolve => setTimeout(resolve, 300));
-        updateSanitationStep('data', 'completed');
-        
-        // Step 3: Indexing
-        updateSanitationStep('indexing', 'processing');
-        await new Promise(resolve => setTimeout(resolve, 400));
-        updateSanitationStep('indexing', 'completed');
-        
-        // Show results
+        // If sanitation was performed, show the modal
         if (data.sanitized && data.sanitation_report) {
+          const fileSize = `${(file.size / 1024).toFixed(1)} KB`;
+          
+          // Show sanitation modal with animated steps
+          showSanitationModal(file.name, fileSize, `${data.sanitation_report.rows_processed} rows`);
+          
+          // Animate the steps
+          updateSanitationStep('columns', 'processing');
+          await new Promise(resolve => setTimeout(resolve, 400));
+          updateSanitationStep('columns', 'completed');
+          
+          updateSanitationStep('data', 'processing');
+          await new Promise(resolve => setTimeout(resolve, 300));
+          updateSanitationStep('data', 'completed');
+          
+          updateSanitationStep('indexing', 'processing');
+          await new Promise(resolve => setTimeout(resolve, 400));
+          updateSanitationStep('indexing', 'completed');
+          
+          // Show results
           showSanitationResults(data.sanitation_report);
           uploadStatus.innerText = `Processed: ${file.name} (issues found and fixed)`;
           toast(`✨ ${file.name} processed - data cleaned for optimal performance!`);
         } else {
-          showSanitationResults({
-            issues_found: [],
-            issues_fixed: ['No issues found - data is already clean!'],
-            original_columns: [],
-            cleaned_columns: []
-          });
+          // Normal upload without sanitation
           uploadStatus.innerText = `Uploaded: ${file.name}`;
-          toast(`✅ ${file.name} uploaded successfully - no cleaning needed!`);
+          toast(`✅ ${file.name} uploaded successfully!`);
         }
       } else {
-        updateSanitationStep('columns', 'error');
         uploadStatus.innerText = 'Upload error: ' + (data.detail || JSON.stringify(data));
         toast(`❌ Upload failed: ${file.name}`);
-        
-        // Close modal after error
-        setTimeout(() => {
-          sanitationClose.click();
-        }, 2000);
       }
     } catch (e) {
-      updateSanitationStep('columns', 'error');
       uploadStatus.innerText = 'Upload failed: ' + e;
       toast(`❌ Upload failed: ${file.name}`);
-      
-      // Close modal after error
-      setTimeout(() => {
-        sanitationClose.click();
-      }, 2000);
     }
   }
+  await loadFiles();
 });
 
 refreshFiles.addEventListener('click', loadFiles);
@@ -1003,6 +985,10 @@ const sanitationClose = document.getElementById('sanitationClose');
 const sanitationContinue = document.getElementById('sanitationContinue');
 
 function showSanitationModal(filename, fileSize, rowCount) {
+  if (!sanitationFileName || !sanitationFileDetails) {
+    console.error('Sanitation modal elements not found');
+    return;
+  }
   sanitationFileName.textContent = filename;
   sanitationFileDetails.textContent = `${fileSize} • ${rowCount} rows`;
   
@@ -1026,7 +1012,15 @@ function showSanitationModal(filename, fileSize, rowCount) {
 
 function updateSanitationStep(stepName, status = 'processing') {
   const step = document.querySelector(`[data-step="${stepName}"]`);
+  if (!step) {
+    console.error(`Sanitation step ${stepName} not found`);
+    return;
+  }
   const indicator = step.querySelector('div > div');
+  if (!indicator) {
+    console.error(`Sanitation step indicator for ${stepName} not found`);
+    return;
+  }
   
   if (status === 'processing') {
     indicator.className = 'w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin';
@@ -1093,26 +1087,36 @@ function showSanitationResults(report) {
   sanitationActions.classList.remove('hidden');
 }
 
-// Modal event handlers
-sanitationClose.addEventListener('click', () => {
-  sanitationModal.classList.add('hidden');
-  sanitationModal.classList.remove('flex');
-});
+// Modal event handlers with null checks
+if (sanitationClose) {
+  sanitationClose.addEventListener('click', () => {
+    if (sanitationModal) {
+      sanitationModal.classList.add('hidden');
+      sanitationModal.classList.remove('flex');
+    }
+  });
+}
 
-sanitationContinue.addEventListener('click', async () => {
-  sanitationModal.classList.add('hidden');
-  sanitationModal.classList.remove('flex');
-  // Refresh files list to show the newly processed file
-  await loadFiles();
-  toast('Ready to chat with your clean data! 🚀');
-});
+if (sanitationContinue) {
+  sanitationContinue.addEventListener('click', async () => {
+    if (sanitationModal) {
+      sanitationModal.classList.add('hidden');
+      sanitationModal.classList.remove('flex');
+    }
+    // Refresh files list to show the newly processed file
+    await loadFiles();
+    toast('Ready to chat with your clean data! 🚀');
+  });
+}
 
 // Close modal when clicking backdrop
-sanitationModal.addEventListener('click', (e) => {
-  if (e.target === sanitationModal) {
-    sanitationClose.click();
-  }
-});
+if (sanitationModal) {
+  sanitationModal.addEventListener('click', (e) => {
+    if (e.target === sanitationModal && sanitationClose) {
+      sanitationClose.click();
+    }
+  });
+}
 
 // initial load
 loadFiles();
