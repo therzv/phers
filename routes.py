@@ -66,6 +66,23 @@ async def upload_file(file: UploadFile = File(...), background_tasks: Background
     if df.empty:
         raise HTTPException(status_code=400, detail="File contains no valid data")
     
+    # Data Sanitation Step
+    from core import sanitize_dataframe
+    sanitation_report = None
+    try:
+        sanitation_result = sanitize_dataframe(df, filename)
+        df_cleaned = sanitation_result["cleaned_df"]
+        sanitation_report = sanitation_result["report"]
+        needs_cleaning = sanitation_result["needs_cleaning"]
+        
+        # If sanitation found issues, save both versions and return report
+        if needs_cleaning:
+            # Use the cleaned DataFrame for processing
+            df = df_cleaned
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Data sanitation failed: {str(e)}")
+
     # Save file to data directory
     save_path = os.path.join(DATA_DIR, filename)
     try:
@@ -97,7 +114,14 @@ async def upload_file(file: UploadFile = File(...), background_tasks: Background
             t.start()
     except Exception:
         pass
-    return {"status": "ok", "table": table_name, "columns": TABLE_COLUMNS[table_name]}
+    response = {"status": "ok", "table": table_name, "columns": TABLE_COLUMNS[table_name]}
+    
+    # Include sanitation report if cleaning was performed
+    if sanitation_report and sanitation_report.get("issues_found"):
+        response["sanitation_report"] = sanitation_report
+        response["sanitized"] = True
+        
+    return response
 
 
 @router.post('/choose_file')

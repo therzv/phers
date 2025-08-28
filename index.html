@@ -760,21 +760,72 @@ uploadBtn.addEventListener('click', async ()=>{
   }
   uploadStatus.innerText = 'Uploading...';
   for (let i=0;i<files.length;i++){
+    const file = files[i];
+    const fileSize = `${(file.size / 1024).toFixed(1)} KB`;
+    
+    // Show sanitation modal immediately
+    showSanitationModal(file.name, fileSize, 'Processing...');
+    
     const fd = new FormData();
-    fd.append('file', files[i]);
+    fd.append('file', file);
+    
     try {
+      // Step 1: Column cleaning
+      updateSanitationStep('columns', 'processing');
+      await new Promise(resolve => setTimeout(resolve, 500)); // Visual delay
+      
       const res = await fetch('/upload', { method: 'POST', body: fd });
       const data = await res.json();
+      
       if (res.ok) {
-        uploadStatus.innerText = `Uploaded: ${files[i].name}`;
+        updateSanitationStep('columns', 'completed');
+        
+        // Step 2: Data cleaning  
+        updateSanitationStep('data', 'processing');
+        await new Promise(resolve => setTimeout(resolve, 300));
+        updateSanitationStep('data', 'completed');
+        
+        // Step 3: Indexing
+        updateSanitationStep('indexing', 'processing');
+        await new Promise(resolve => setTimeout(resolve, 400));
+        updateSanitationStep('indexing', 'completed');
+        
+        // Show results
+        if (data.sanitized && data.sanitation_report) {
+          showSanitationResults(data.sanitation_report);
+          uploadStatus.innerText = `Processed: ${file.name} (issues found and fixed)`;
+          toast(`✨ ${file.name} processed - data cleaned for optimal performance!`);
+        } else {
+          showSanitationResults({
+            issues_found: [],
+            issues_fixed: ['No issues found - data is already clean!'],
+            original_columns: [],
+            cleaned_columns: []
+          });
+          uploadStatus.innerText = `Uploaded: ${file.name}`;
+          toast(`✅ ${file.name} uploaded successfully - no cleaning needed!`);
+        }
       } else {
+        updateSanitationStep('columns', 'error');
         uploadStatus.innerText = 'Upload error: ' + (data.detail || JSON.stringify(data));
+        toast(`❌ Upload failed: ${file.name}`);
+        
+        // Close modal after error
+        setTimeout(() => {
+          sanitationClose.click();
+        }, 2000);
       }
     } catch (e) {
+      updateSanitationStep('columns', 'error');
       uploadStatus.innerText = 'Upload failed: ' + e;
+      toast(`❌ Upload failed: ${file.name}`);
+      
+      // Close modal after error
+      setTimeout(() => {
+        sanitationClose.click();
+      }, 2000);
     }
   }
-  await loadFiles();
 });
 
 refreshFiles.addEventListener('click', loadFiles);
@@ -937,9 +988,228 @@ if (savedName) {
   companyName.innerText = savedName;
 }
 
+// Sanitation Modal Functions
+const sanitationModal = document.getElementById('sanitationModal');
+const sanitationFileName = document.getElementById('sanitationFileName');
+const sanitationFileDetails = document.getElementById('sanitationFileDetails'); 
+const sanitationStatus = document.getElementById('sanitationStatus');
+const sanitationIssues = document.getElementById('sanitationIssues');
+const sanitationIssuesList = document.getElementById('sanitationIssuesList');
+const sanitationComparison = document.getElementById('sanitationComparison');
+const originalColumns = document.getElementById('originalColumns');
+const cleanedColumns = document.getElementById('cleanedColumns');
+const sanitationActions = document.getElementById('sanitationActions');
+const sanitationClose = document.getElementById('sanitationClose');
+const sanitationContinue = document.getElementById('sanitationContinue');
+
+function showSanitationModal(filename, fileSize, rowCount) {
+  sanitationFileName.textContent = filename;
+  sanitationFileDetails.textContent = `${fileSize} • ${rowCount} rows`;
+  
+  // Reset modal state
+  document.querySelectorAll('.sanitation-step').forEach(step => {
+    const indicator = step.querySelector('div > div');
+    indicator.className = 'w-2 h-2 bg-slate-400 rounded-full';
+  });
+  sanitationIssues.classList.add('hidden');
+  sanitationComparison.classList.add('hidden');  
+  sanitationActions.classList.add('hidden');
+  sanitationStatus.innerHTML = `
+    <div class="animate-spin w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full"></div>
+    <span class="text-sm font-medium">Processing...</span>
+  `;
+  
+  // Show modal
+  sanitationModal.classList.remove('hidden');
+  sanitationModal.classList.add('flex');
+}
+
+function updateSanitationStep(stepName, status = 'processing') {
+  const step = document.querySelector(`[data-step="${stepName}"]`);
+  const indicator = step.querySelector('div > div');
+  
+  if (status === 'processing') {
+    indicator.className = 'w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin';
+  } else if (status === 'completed') {
+    indicator.className = 'w-4 h-4 bg-green-500 rounded-full flex items-center justify-center';
+    indicator.innerHTML = '<svg class="w-2 h-2 text-white" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>';
+  } else if (status === 'error') {
+    indicator.className = 'w-4 h-4 bg-red-500 rounded-full flex items-center justify-center';
+    indicator.innerHTML = '<svg class="w-2 h-2 text-white" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>';
+  }
+}
+
+function showSanitationResults(report) {
+  // Update status to completed
+  sanitationStatus.innerHTML = `
+    <svg class="w-5 h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+      <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+    </svg>
+    <span class="text-sm font-medium text-green-600">Completed</span>
+  `;
+  
+  // Show issues if any were found
+  if (report.issues_found && report.issues_found.length > 0) {
+    sanitationIssues.classList.remove('hidden');
+    sanitationIssuesList.innerHTML = '';
+    
+    report.issues_found.forEach(issue => {
+      const issueEl = document.createElement('div');
+      issueEl.className = 'flex items-center justify-between p-2 bg-yellow-50 rounded-lg border-l-4 border-yellow-400';
+      issueEl.innerHTML = `
+        <div>
+          <div class="font-mono text-sm">${issue.original}</div>
+          <div class="text-xs text-slate-600">${issue.issues.join(', ')}</div>
+        </div>
+        <div class="font-mono text-sm text-green-600">→ ${issue.cleaned}</div>
+      `;
+      sanitationIssuesList.appendChild(issueEl);
+    });
+  }
+  
+  // Show before/after comparison if columns were changed
+  if (report.original_columns && report.cleaned_columns) {
+    sanitationComparison.classList.remove('hidden');
+    
+    originalColumns.innerHTML = '';
+    cleanedColumns.innerHTML = '';
+    
+    report.original_columns.forEach(col => {
+      const colEl = document.createElement('div');
+      colEl.className = 'px-2 py-1 bg-red-50 rounded text-red-700';
+      colEl.textContent = col;
+      originalColumns.appendChild(colEl);
+    });
+    
+    report.cleaned_columns.forEach(col => {
+      const colEl = document.createElement('div');
+      colEl.className = 'px-2 py-1 bg-green-50 rounded text-green-700';
+      colEl.textContent = col;
+      cleanedColumns.appendChild(colEl);
+    });
+  }
+  
+  // Show action buttons
+  sanitationActions.classList.remove('hidden');
+}
+
+// Modal event handlers
+sanitationClose.addEventListener('click', () => {
+  sanitationModal.classList.add('hidden');
+  sanitationModal.classList.remove('flex');
+});
+
+sanitationContinue.addEventListener('click', async () => {
+  sanitationModal.classList.add('hidden');
+  sanitationModal.classList.remove('flex');
+  // Refresh files list to show the newly processed file
+  await loadFiles();
+  toast('Ready to chat with your clean data! 🚀');
+});
+
+// Close modal when clicking backdrop
+sanitationModal.addEventListener('click', (e) => {
+  if (e.target === sanitationModal) {
+    sanitationClose.click();
+  }
+});
+
 // initial load
 loadFiles();
 </script>
+
+<!-- Data Sanitation Progress Modal -->
+<div id="sanitationModal" class="fixed inset-0 hidden items-center justify-center z-50">
+  <div class="absolute inset-0 bg-black opacity-50"></div>
+  <div class="bg-white rounded-2xl p-8 z-50 w-11/12 max-w-3xl panel-floating shadow-2xl">
+    <!-- Header -->
+    <div class="flex items-center gap-3 mb-6">
+      <div class="w-12 h-12 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl flex items-center justify-center">
+        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+      </div>
+      <div>
+        <h3 class="text-xl font-bold text-slate-800">Data Sanitation</h3>
+        <p class="text-sm text-slate-600">Cleaning your data for optimal performance</p>
+      </div>
+    </div>
+    
+    <!-- File Info -->
+    <div id="sanitationFileInfo" class="bg-slate-50 rounded-lg p-4 mb-6">
+      <div class="flex items-center justify-between">
+        <div>
+          <h4 id="sanitationFileName" class="font-medium text-slate-800"></h4>
+          <p id="sanitationFileDetails" class="text-sm text-slate-600"></p>
+        </div>
+        <div id="sanitationStatus" class="flex items-center gap-2">
+          <div class="animate-spin w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full"></div>
+          <span class="text-sm font-medium">Processing...</span>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Progress Steps -->
+    <div id="sanitationSteps" class="space-y-4 mb-6">
+      <div class="sanitation-step" data-step="columns">
+        <div class="flex items-center gap-3">
+          <div class="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center">
+            <div class="w-2 h-2 bg-slate-400 rounded-full"></div>
+          </div>
+          <span class="font-medium text-slate-700">Cleaning column names</span>
+        </div>
+      </div>
+      
+      <div class="sanitation-step" data-step="data">
+        <div class="flex items-center gap-3">
+          <div class="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center">
+            <div class="w-2 h-2 bg-slate-400 rounded-full"></div>
+          </div>
+          <span class="font-medium text-slate-700">Sanitizing data values</span>
+        </div>
+      </div>
+      
+      <div class="sanitation-step" data-step="indexing">
+        <div class="flex items-center gap-3">
+          <div class="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center">
+            <div class="w-2 h-2 bg-slate-400 rounded-full"></div>
+          </div>
+          <span class="font-medium text-slate-700">Creating search index</span>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Issues Found -->
+    <div id="sanitationIssues" class="hidden">
+      <h4 class="font-medium text-slate-800 mb-3">Issues Found & Fixed</h4>
+      <div class="space-y-2 max-h-48 overflow-y-auto">
+        <div id="sanitationIssuesList" class="space-y-2"></div>
+      </div>
+    </div>
+    
+    <!-- Before/After Comparison -->
+    <div id="sanitationComparison" class="hidden mt-6">
+      <h4 class="font-medium text-slate-800 mb-3">Column Names - Before & After</h4>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <h5 class="text-sm font-medium text-red-600 mb-2">Original</h5>
+          <div id="originalColumns" class="space-y-1 text-sm font-mono text-slate-600 max-h-32 overflow-y-auto"></div>
+        </div>
+        <div>
+          <h5 class="text-sm font-medium text-green-600 mb-2">Cleaned</h5>
+          <div id="cleanedColumns" class="space-y-1 text-sm font-mono text-slate-600 max-h-32 overflow-y-auto"></div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Action Buttons -->
+    <div id="sanitationActions" class="flex gap-3 justify-end mt-6 hidden">
+      <button id="sanitationClose" class="px-4 py-2 text-slate-600 hover:text-slate-800 font-medium">Close</button>
+      <button id="sanitationContinue" class="px-6 py-2 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-lg hover:from-blue-600 hover:to-indigo-700 font-medium">Continue</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
 
