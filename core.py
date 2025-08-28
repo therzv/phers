@@ -750,11 +750,15 @@ INSTRUCTIONS (critical - follow exactly):
    - "total value/cost" = SUM(value_column)
    - "in repair/active/disposed" = WHERE status = 'Status'
    - "by location/category" = GROUP BY column
-7. CRITICAL - Name searching strategy:
-   - Names may be stored as "Last, Title First" format (e.g., "Howard, Mr. Benjamin")
-   - For searching "John Smith", use: Name LIKE '%John%' AND Name LIKE '%Smith%'
-   - For searching "Benjamin Howard", use: Name LIKE '%Benjamin%' AND Name LIKE '%Howard%'
-   - Always use LIKE with % wildcards for name searches to handle different formats
+7. CRITICAL - Search strategies:
+   a) Names may be stored as "Last, Title First" format (e.g., "Howard, Mr. Benjamin")
+      - For searching "John Smith", use: Name LIKE '%John%' AND Name LIKE '%Smith%'
+      - For searching "Benjamin Howard", use: Name LIKE '%Benjamin%' AND Name LIKE '%Howard%'
+   b) Asset tags, IDs, or codes should use exact matching or LIKE:
+      - For "ASSET-VAF-HO-IV-124", use: `Asset TAG` = 'ASSET-VAF-HO-IV-124' 
+      - Or use: `Asset TAG` LIKE '%ASSET-VAF-HO-IV-124%'
+      - Note: Column names with spaces need backticks: `Asset TAG`
+   c) Always use LIKE with % wildcards for partial text searches
 8. Use LIKE for partial text matching when appropriate.
 9. Output ONLY the SQL inside <SQL>...</SQL> tags, nothing else.
 
@@ -766,6 +770,7 @@ Common query patterns:
 - Group: SELECT column, COUNT(*) FROM table GROUP BY column
 - Filter: SELECT * FROM table WHERE column = 'value'
 - Name search: SELECT * FROM table WHERE Name LIKE '%FirstName%' AND Name LIKE '%LastName%'
+- Asset/ID search: SELECT * FROM table WHERE `Asset TAG` = 'ASSET-123' OR `Asset TAG` LIKE '%ASSET-123%'
 
 <SQL>SELECT ...</SQL>'''
 
@@ -791,7 +796,7 @@ rows_json: {rows_json}
 
 
 def suggest_column_alternatives(invalid_column: str, table_name: str = None) -> List[str]:
-    """Suggest column alternatives when a column is not found."""
+    """AI-powered intelligent column suggestions."""
     suggestions = []
     
     # Get all available columns
@@ -816,39 +821,162 @@ def suggest_column_alternatives(invalid_column: str, table_name: str = None) -> 
                 if original and original not in all_cols:
                     all_cols.append(original)
     
-    # Find close matches
-    matches = difflib.get_close_matches(invalid_column.lower(), 
-                                      [col.lower() for col in all_cols], 
-                                      n=3, cutoff=0.4)
+    # Smart matching with multiple strategies
+    lower_col = invalid_column.lower()
     
-    # Convert back to original case
-    lower_to_orig = {col.lower(): col for col in all_cols}
-    suggestions = [lower_to_orig[match] for match in matches if match in lower_to_orig]
+    # Strategy 1: Exact partial matches
+    exact_matches = [col for col in all_cols if lower_col in col.lower() or col.lower() in lower_col]
+    suggestions.extend(exact_matches[:2])
     
-    # Add some common HR term suggestions if no good matches
-    if not suggestions:
-        hr_suggestions = {
-            'asset': ['Asset ID'],
-            'id': ['Asset ID'], 
-            'status': ['Status'],
-            'state': ['Status'],
-            'condition': ['Status'],
-            'type': ['Category'],
-            'category': ['Category'],
-            'kind': ['Category'],
-            'cost': ['Value ($)'],
-            'price': ['Value ($)'],
-            'value': ['Value ($)'],
-            'location': ['Location'],
-            'place': ['Location'],
-            'site': ['Location']
+    # Strategy 2: Fuzzy matching
+    if len(suggestions) < 3:
+        matches = difflib.get_close_matches(lower_col, [col.lower() for col in all_cols], n=3, cutoff=0.4)
+        lower_to_orig = {col.lower(): col for col in all_cols}
+        fuzzy_matches = [lower_to_orig[match] for match in matches if match in lower_to_orig]
+        for match in fuzzy_matches:
+            if match not in suggestions:
+                suggestions.append(match)
+    
+    # Strategy 3: Enhanced smart semantic suggestions with context awareness
+    if len(suggestions) < 3:
+        semantic_map = {
+            # Asset & Equipment terms (multiple variations)
+            'asset': ['Asset TAG', 'Asset ID', 'item Name', 'Model name'],
+            'assets': ['Asset TAG', 'Asset ID', 'item Name', 'Model name'],
+            'tag': ['Asset TAG', 'Asset ID', 'Serial number'],
+            'tags': ['Asset TAG', 'Asset ID', 'Serial number'],
+            'equipment': ['item Name', 'Category', 'Model name', 'Manufacturer'],
+            'device': ['item Name', 'Category', 'Model name', 'Manufacturer'],
+            'devices': ['item Name', 'Category', 'Model name', 'Manufacturer'],
+            
+            # Manufacturer variations
+            'manufacture': ['Manufacturer', 'Model name', 'item Name'],
+            'manufacturer': ['Manufacturer', 'Model name', 'item Name'],
+            'brand': ['Manufacturer', 'Model name', 'item Name'],
+            'make': ['Manufacturer', 'Model name', 'item Name'],
+            'made': ['Manufacturer', 'Model name'],
+            'company': ['Manufacturer', 'Company', 'Supplier'],
+            
+            # Location and company terms
+            'location': ['Location', 'Company', 'Status'],
+            'where': ['Location', 'Company', 'Status'],
+            'place': ['Location', 'Company'],
+            'office': ['Location', 'Company'],
+            'building': ['Location', 'Company'],
+            
+            # Financial terms
+            'cost': ['Purchase Cost', 'Purchase Date', 'Supplier'],
+            'costs': ['Purchase Cost', 'Purchase Date', 'Supplier'],
+            'price': ['Purchase Cost', 'Purchase Date', 'Supplier'],
+            'value': ['Purchase Cost', 'Purchase Date'],
+            'money': ['Purchase Cost', 'Purchase Date'],
+            'bought': ['Purchase Cost', 'Purchase Date', 'Supplier'],
+            'purchased': ['Purchase Cost', 'Purchase Date', 'Supplier'],
+            
+            # Status and condition terms
+            'status': ['Status', 'Warranty', 'Location'],
+            'condition': ['Status', 'Warranty'],
+            'state': ['Status', 'Warranty'],
+            'working': ['Status', 'Warranty'],
+            'broken': ['Status', 'Warranty'],
+            'active': ['Status', 'Warranty'],
+            'warranty': ['Warranty', 'Status', 'Purchase Date'],
+            
+            # User and ownership terms
+            'user': ['Username', 'Company', 'Location'],
+            'owner': ['Username', 'Company', 'Location'],
+            'person': ['Username', 'Company'],
+            'employee': ['Username', 'Company', 'Location'],
+            'staff': ['Username', 'Company', 'Location'],
+            'who': ['Username', 'Company'],
+            
+            # Product and model terms
+            'model': ['Model name', 'Model number', 'Manufacturer'],
+            'product': ['item Name', 'Model name', 'Category'],
+            'item': ['item Name', 'Category', 'Model name'],
+            'name': ['item Name', 'Model name', 'Username'],
+            'type': ['Category', 'item Name', 'Model name'],
+            'category': ['Category', 'item Name'],
+            
+            # Technical identifiers
+            'serial': ['Serial number', 'Model number', 'Asset TAG'],
+            'number': ['Serial number', 'Model number', 'Asset TAG', 'Order Number'],
+            'id': ['Asset TAG', 'Serial number', 'Model number'],
+            'identifier': ['Asset TAG', 'Serial number', 'Model number'],
         }
         
-        for term, cols in hr_suggestions.items():
-            if term in invalid_column.lower():
-                suggestions.extend([col for col in cols if col in all_cols])
+        for term, cols in semantic_map.items():
+            if term in lower_col:
+                for col in cols:
+                    if col in all_cols and col not in suggestions:
+                        suggestions.append(col)
+                        if len(suggestions) >= 3:
+                            break
     
-    return suggestions[:3]  # Return top 3 suggestions
+    return suggestions[:3]  # Return top 3 intelligent suggestions
+
+
+def generate_intelligent_query_suggestion(original_query: str, failed_column: str, suggested_columns: List[str]) -> str:
+    """Generate intelligent alternative query suggestions with advanced pattern recognition."""
+    if not suggested_columns:
+        return original_query
+    
+    # Smart query rewriting
+    query_lower = original_query.lower()
+    best_suggestion = suggested_columns[0]
+    
+    # Advanced pattern recognition for different writing styles
+    writing_patterns = {
+        # Casual/Informal patterns
+        r'what\'s the (.+) of (.+)': r'what is the \1 of \2',
+        r'who made (.+)': r'what is the manufacturer of \1',
+        r'what brand is (.+)': r'what is the manufacturer of \1',
+        r'where is (.+)': r'what is the location of \1',
+        r'how much (.+) cost': r'what is the purchase cost of \1',
+        r'when was (.+) bought': r'what is the purchase date of \1',
+        
+        # Technical/Formal patterns
+        r'manufacture of (.+)': r'manufacturer of \1',
+        r'asset tag (.+)': r'asset with tag \1',
+        r'equipment (.+)': r'item named \1',
+        r'device (.+)': r'item named \1',
+        r'serial number (.+)': r'item with serial \1',
+        r'model (.+)': r'model name \1',
+        
+        # Question word variations
+        r'what\'s': 'what is',
+        r'where\'s': 'where is',
+        r'who\'s': 'who is',
+        r'how\'s': 'how is',
+        
+        # Common misspellings/variations
+        r'manufact\w*': 'manufacturer',
+        r'equipement': 'equipment',
+        r'assett?': 'asset',
+        r'locati?on': 'location',
+        r'purchas\w*': 'purchase',
+    }
+    
+    # Apply pattern-based transformations
+    improved_query = original_query
+    for pattern, replacement in writing_patterns.items():
+        improved_query = re.sub(pattern, replacement, improved_query, flags=re.IGNORECASE)
+    
+    # Context-aware column suggestions
+    context_mappings = {
+        'cost': ['Purchase Cost', 'Value ($)', 'Purchase Date'],
+        'price': ['Purchase Cost', 'Value ($)', 'Purchase Date'],
+        'location': ['Location', 'Company', 'Status'],
+        'where': ['Location', 'Company', 'Status'],
+        'manufacturer': ['Manufacturer', 'Model name', 'item Name'],
+        'brand': ['Manufacturer', 'Model name', 'item Name'],
+        'serial': ['Serial number', 'Model number', 'Asset TAG'],
+        'tag': ['Asset TAG', 'Serial number', 'Model number'],
+        'status': ['Status', 'Warranty', 'Location'],
+        'warranty': ['Warranty', 'Status', 'Purchase Date'],
+    }
+    
+    return improved_query
 
 
 def get_active_files() -> Dict[str, str]:
