@@ -33,22 +33,57 @@ async def index():
 
 @router.post("/upload")
 async def upload_file(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+    
     filename = file.filename
     contents = await file.read()
+    
+    if len(contents) == 0:
+        raise HTTPException(status_code=400, detail="File is empty")
+    
+    # Parse the file
     try:
         if filename.lower().endswith(".csv"):
-            df = pd.read_csv(io.BytesIO(contents))
+            try:
+                # Try different encodings for CSV
+                df = pd.read_csv(io.BytesIO(contents))
+            except UnicodeDecodeError:
+                df = pd.read_csv(io.BytesIO(contents), encoding='latin-1')
         elif filename.lower().endswith((".xlsx", ".xls")):
             df = pd.read_excel(io.BytesIO(contents))
         else:
-            raise HTTPException(status_code=400, detail="Unsupported file type. Use .csv or .xlsx.")
+            raise HTTPException(status_code=400, detail="Unsupported file type. Use .csv or .xlsx files.")
+    except pd.errors.EmptyDataError:
+        raise HTTPException(status_code=400, detail="File contains no data or has invalid format")
+    except pd.errors.ParserError as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse file format: {str(e)}")
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to parse file: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
+    
+    # Check if DataFrame has data
+    if df.empty:
+        raise HTTPException(status_code=400, detail="File contains no valid data")
+    
+    # Save file to data directory
     save_path = os.path.join(DATA_DIR, filename)
-    with open(save_path, "wb") as f:
-        f.write(contents)
-    table_name = load_dataframe_to_sql(df, os.path.splitext(filename)[0])
-    UPLOADED_FILES[filename] = table_name
+    try:
+        with open(save_path, "wb") as f:
+            f.write(contents)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+    
+    # Load to SQL database
+    try:
+        table_name = load_dataframe_to_sql(df, os.path.splitext(filename)[0])
+        UPLOADED_FILES[filename] = table_name
+    except Exception as e:
+        # Clean up saved file if database loading fails
+        try:
+            os.remove(save_path)
+        except:
+            pass
+        raise HTTPException(status_code=500, detail=f"Failed to process data: {str(e)}")
     try:
         if CHROMA_AVAILABLE:
             def _index():
@@ -205,7 +240,8 @@ async def chat(req: dict):
         sql = auto_quote_string_literals(sql)
     except Exception:
         pass
-    validate_sql_safe(sql)
+    # Clean and validate SQL (returns cleaned version)
+    sql = validate_sql_safe(sql)
     suggestions = []
     try:
         if SQLPARSE_AVAILABLE:
@@ -298,8 +334,8 @@ async def execute_sql(req: dict):
         candidates = score_candidate_tables(question or sql)
         # return a friendly error with candidates (UI will render suggestions)
         raise HTTPException(status_code=400, detail="No known table referenced in the SQL.", headers={"X-Candidates": json.dumps(candidates)})
-    # safety checks
-    validate_sql_safe(sql)
+    # safety checks and cleaning
+    sql = validate_sql_safe(sql)
     if SQLPARSE_AVAILABLE:
         validate_sql_against_schema(sql)
 
@@ -314,13 +350,26 @@ async def execute_sql(req: dict):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"SQL execution error: {e}")
 
-    rows = df.to_dict(orient='records')
+    # Convert DataFrame to records with proper JSON serialization
+    try:
+        rows = df.to_dict(orient='records')
+        # Clean up any NaN or infinity values that can't be JSON serialized
+        for row in rows:
+            for key, value in row.items():
+                if pd.isna(value):
+                    row[key] = None
+                elif isinstance(value, float) and (value != value or abs(value) == float('inf')):
+                    row[key] = None
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process query results: {e}")
 
     # Summarize the rows with the LLM if available
     summary_text = ""
     table_preview = rows[:10]
     try:
-        summary_prompt = SUMMARY_PROMPT_TEMPLATE.format(question=question or sql, sql=sql, rows_json=json.dumps(rows[:200], default=str))
+        # Safely serialize to JSON
+        rows_json = json.dumps(rows[:200], default=str, ensure_ascii=False)
+        summary_prompt = SUMMARY_PROMPT_TEMPLATE.format(question=question or sql, sql=sql, rows_json=rows_json)
         summary_llm = get_llm()
         summary_resp = summary_llm.predict(summary_prompt)
         try:

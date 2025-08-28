@@ -436,15 +436,41 @@ def get_llm():
 
 
 def load_dataframe_to_sql(df: pd.DataFrame, table_name: str):
+    """Load DataFrame to SQL with improved data normalization."""
     table_name_safe = re.sub(r"[^\w\d_]", "_", table_name).lower()
+    
+    # Clean the DataFrame first
+    df = df.copy()
+    
+    # Remove completely empty rows and columns
+    df = df.dropna(how='all')  # Remove rows where all values are NaN
+    df = df.loc[:, ~df.isnull().all()]  # Remove columns where all values are NaN
+    
+    # Handle empty DataFrame
+    if df.empty:
+        raise ValueError(f"File {table_name} contains no valid data after cleaning")
+    
+    # Clean column names
     orig_cols = list(df.columns)
     sanitized_cols = []
     seen = {}
     col_map: Dict[str, str] = {}
+    
     for c in orig_cols:
-        s = re.sub(r"[^\w\d_]", "_", str(c)).strip()
-        if not s:
-            s = "col"
+        # Convert to string and clean
+        c_str = str(c).strip()
+        if not c_str or c_str.lower() in ['nan', 'none', 'null', 'unnamed']:
+            c_str = "unnamed_column"
+        
+        # Sanitize column name for SQL
+        s = re.sub(r"[^\w\d_]", "_", c_str)
+        s = re.sub(r"_+", "_", s)  # Replace multiple underscores with single
+        s = s.strip("_")  # Remove leading/trailing underscores
+        
+        if not s or s.isdigit():
+            s = f"col_{s}" if s.isdigit() else "col"
+        
+        # Make sure column name is unique
         base = s
         i = 1
         while s in seen:
@@ -452,22 +478,45 @@ def load_dataframe_to_sql(df: pd.DataFrame, table_name: str):
             i += 1
         seen[s] = True
         sanitized_cols.append(s)
-        col_map[s] = str(c)
-    df = df.copy()
+        col_map[s] = c_str
+    
     df.columns = sanitized_cols
-    # write using pandas to_sql via SQLAlchemy engine for broader DB support
+    
+    # Clean data types and values
+    for col in df.columns:
+        # Replace various null representations with actual NaN
+        df[col] = df[col].replace(['', ' ', 'NULL', 'null', 'None', 'none', '#N/A', '#NULL!'], pd.NA)
+        
+        # Try to convert numeric columns
+        if df[col].dtype == 'object':
+            # Check if column looks numeric
+            sample_non_null = df[col].dropna().head(10)
+            if len(sample_non_null) > 0:
+                # Try to convert to numeric
+                numeric_series = pd.to_numeric(sample_non_null, errors='coerce')
+                if not numeric_series.isna().all():
+                    # If most values can be converted to numeric, convert the whole column
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    # Write using pandas to_sql via SQLAlchemy engine for broader DB support
     engine = _init_engine()
     try:
         df.to_sql(table_name_safe, engine, if_exists="replace", index=False, method='multi')
-    except Exception:
+    except Exception as e:
         # fallback to sqlite3 direct if SQLAlchemy write fails
-        if conn is not None:
-            df.to_sql(table_name_safe, conn, if_exists="replace", index=False)
-        else:
-            raise
+        try:
+            if conn is not None:
+                df.to_sql(table_name_safe, conn, if_exists="replace", index=False)
+            else:
+                raise e
+        except Exception as fallback_error:
+            raise ValueError(f"Failed to save data to database: {fallback_error}")
+    
     cols = list(df.columns)
     TABLE_COLUMNS[table_name_safe] = cols
     COLUMN_NAME_MAP[table_name_safe] = col_map
+    
+    print(f"Successfully loaded {len(df)} rows and {len(cols)} columns to table '{table_name_safe}'")
     return table_name_safe
 
 
@@ -561,17 +610,35 @@ def build_schema_description():
 
 
 def validate_sql_safe(sql: str):
-    s = sql.strip().lower()
-    if not s.startswith("select"):
+    """Validate and clean SQL for safety."""
+    # Clean the SQL first
+    s = sql.strip()
+    
+    # Remove trailing semicolons (common LLM behavior)
+    while s.endswith(';'):
+        s = s[:-1].strip()
+    
+    # Remove any extra whitespace and newlines
+    s = re.sub(r'\s+', ' ', s)
+    
+    s_lower = s.lower()
+    
+    if not s_lower.startswith("select"):
         raise HTTPException(status_code=400, detail="LLM must return a SELECT query only.")
+    
+    # Check for multiple statements (semicolons in middle)
     if ";" in s:
-        raise HTTPException(status_code=400, detail="Semicolons not allowed in SQL.")
-    forbidden = ["insert ", "update ", "delete ", "drop ", "alter ", "create "]
-    if any(k in s for k in forbidden):
+        raise HTTPException(status_code=400, detail="Multiple SQL statements not allowed.")
+    
+    forbidden = ["insert ", "update ", "delete ", "drop ", "alter ", "create ", "exec ", "execute "]
+    if any(k in s_lower for k in forbidden):
         raise HTTPException(status_code=400, detail="Only read (SELECT) queries are allowed.")
-    if not re.match(r"^[\s\w\d\.\,\*\(\)=<>!\"'%-]+$", sql):
+    
+    # More lenient character validation (allow more SQL characters)
+    if not re.match(r"^[\s\w\d\.\,\*\(\)=<>!\"'%\-\+\/\[\]_]+$", s):
         raise HTTPException(status_code=400, detail="SQL contains unexpected characters.")
-    return True
+    
+    return s  # Return the cleaned SQL
 
 
 def auto_quote_string_literals(sql: str) -> str:
