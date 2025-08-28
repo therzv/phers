@@ -525,13 +525,19 @@ async def execute_sql(req: dict):
         rows_json = json.dumps(rows[:200], default=str, ensure_ascii=False)
         summary_prompt = SUMMARY_PROMPT_TEMPLATE.format(question=question or sql, sql=sql, rows_json=rows_json)
         summary_llm = get_llm()
-        summary_resp = summary_llm.predict(summary_prompt)
-        try:
-            parsed = json.loads(summary_resp)
-            summary_text = parsed.get('text', '')
-            table_preview = parsed.get('table_preview', table_preview)
-        except Exception:
-            summary_text = summary_resp.strip()
+        if summary_llm:
+            summary_resp = summary_llm.predict(summary_prompt)
+            try:
+                parsed = json.loads(summary_resp)
+                summary_text = parsed.get('text', '')
+                table_preview = parsed.get('table_preview', table_preview)
+            except Exception:
+                # Clean the response to ensure it's safe for JSON
+                summary_text = str(summary_resp).strip()
+                # Remove any problematic characters that could break JSON
+                summary_text = summary_text.replace('"', "'").replace('\n', ' ').replace('\r', '')
+        else:
+            summary_text = f"Found {len(rows)} matching records."
     except Exception:
         summary_text = ""
 
@@ -648,7 +654,35 @@ async def execute_sql(req: dict):
     except Exception:
         suggestions = []
 
-    return {"sql": sql, "rows": rows, "summary": summary_text or (f"{len(rows)} rows returned."), "table_preview": table_preview, "display_rows": display_rows, "suggestions": suggestions, "auto_fixed": auto_fixed}
+    # Ensure all response data is JSON serializable
+    try:
+        response_data = {
+            "sql": str(sql), 
+            "rows": rows, 
+            "summary": str(summary_text or f"{len(rows)} rows returned."), 
+            "table_preview": table_preview, 
+            "display_rows": display_rows, 
+            "suggestions": suggestions, 
+            "auto_fixed": bool(auto_fixed)
+        }
+        
+        # Test JSON serialization before returning
+        import json
+        json.dumps(response_data, default=str, ensure_ascii=False)
+        
+        return response_data
+    except Exception as json_err:
+        # Fallback response if JSON serialization fails
+        return {
+            "sql": str(sql),
+            "rows": [],
+            "summary": f"Query executed successfully. Found {len(rows)} rows.",
+            "table_preview": [],
+            "display_rows": [],
+            "suggestions": [],
+            "auto_fixed": bool(auto_fixed),
+            "serialization_error": str(json_err)
+        }
 
 
 @router.get('/db_info')

@@ -901,7 +901,18 @@ form.addEventListener('submit', async (e)=>{
       const executingMsg = addMessage('assistant', '⚡ Running SQL and composing an answer...');
       const exec = await fetch('/execute_sql', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ sql: data.sql, question: q }) });
       executingMsg.remove();
-      const execData = await exec.json();
+      
+      let execData;
+      const response = exec.clone(); // Clone so we can read it multiple ways
+      try {
+        execData = await exec.json();
+      } catch (jsonError) {
+        console.error('JSON parsing error:', jsonError);
+        // Try to get the raw text response for debugging
+        const rawText = await response.text();
+        console.error('Raw response:', rawText);
+        throw new Error(`Server returned invalid JSON: ${rawText.substring(0, 200)}...`);
+      }
       if (!exec.ok) {
         // if server complains about unknown table, offer candidate chooser
         if (exec.status === 400 && execData && execData.detail && exec.headers.get('X-Candidates')) {
