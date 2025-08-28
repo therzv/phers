@@ -624,10 +624,33 @@ def build_schema_description():
     return "\n".join(parts) if parts else "NO_ACTIVE_TABLES"
 
 
-def validate_sql_safe(sql: str):
-    """Validate and clean SQL for safety."""
-    # Clean the SQL first
+def normalize_sql_safely(sql: str) -> str:
+    """Normalize SQL characters and fix common issues automatically."""
     s = sql.strip()
+    
+    # Self-healing character normalization
+    char_fixes = {
+        ''': "'",  # Smart quote to regular quote
+        ''': "'",  # Smart quote to regular quote  
+        '"': '"',  # Smart quote to regular quote
+        '"': '"',  # Smart quote to regular quote
+        '–': '-',  # En dash to regular dash
+        '—': '-',  # Em dash to regular dash
+        '…': '...',  # Ellipsis to dots
+    }
+    
+    for bad_char, good_char in char_fixes.items():
+        s = s.replace(bad_char, good_char)
+    
+    # Remove any remaining problematic characters but preserve SQL structure
+    s = re.sub(r'[^\s\w\d\.\,\*\(\)=<>!\"\'%\-\+\/\[\]_`:]', '', s)
+    
+    return s
+
+def validate_sql_safe(sql: str):
+    """Validate and clean SQL for safety with self-healing."""
+    # First normalize problematic characters
+    s = normalize_sql_safely(sql)
     
     # Remove trailing semicolons (common LLM behavior)
     while s.endswith(';'):
@@ -649,11 +672,11 @@ def validate_sql_safe(sql: str):
     if any(k in s_lower for k in forbidden):
         raise HTTPException(status_code=400, detail="Only read (SELECT) queries are allowed.")
     
-    # More lenient character validation (allow more SQL characters including backticks)
-    if not re.match(r"^[\s\w\d\.\,\*\(\)=<>!\"'%\-\+\/\[\]_`]+$", s):
+    # More lenient character validation (allow more SQL characters including backticks and colons)
+    if not re.match(r"^[\s\w\d\.\,\*\(\)=<>!\"'%\-\+\/\[\]_`:]+$", s):
         raise HTTPException(status_code=400, detail="SQL contains unexpected characters.")
     
-    return s  # Return the cleaned SQL
+    return s  # Return the cleaned and normalized SQL
 
 
 def auto_quote_string_literals(sql: str) -> str:

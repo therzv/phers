@@ -408,6 +408,7 @@ async def execute_sql(req: dict):
     if SQLPARSE_AVAILABLE:
         validate_sql_against_schema(sql)
 
+    auto_fixed = False  # Track if we auto-fixed any issues
     try:
         if ENGINE is not None:
             # pandas accepts SQLAlchemy engine
@@ -417,7 +418,67 @@ async def execute_sql(req: dict):
         else:
             raise Exception('No database engine available')
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"SQL execution error: {e}")
+        error_msg = str(e)
+        
+        # Self-healing: Check if it's a column not found error
+        if "no such column" in error_msg.lower():
+            # Extract the problematic column name
+            import re
+            column_match = re.search(r"no such column[:\s]+([`\w\s]+)", error_msg, re.IGNORECASE)
+            if column_match:
+                problematic_col = column_match.group(1).strip('`\'\"')
+                
+                # Get all available columns from all tables
+                all_columns = []
+                for table_cols in TABLE_COLUMNS.values():
+                    all_columns.extend(table_cols)
+                
+                # Find the closest matching column
+                from core import suggest_column_alternatives
+                suggestions = suggest_column_alternatives(problematic_col)
+                
+                if suggestions:
+                    best_match = suggestions[0]
+                    # Try to auto-fix the SQL by replacing the problematic column
+                    fixed_sql = sql
+                    
+                    # Replace various forms of the problematic column with the best match
+                    replacements = [
+                        f"`{problematic_col}`",
+                        f"[{problematic_col}]", 
+                        f'"{problematic_col}"',
+                        f"'{problematic_col}'",
+                        problematic_col
+                    ]
+                    
+                    for old_col in replacements:
+                        if old_col in sql:
+                            fixed_sql = fixed_sql.replace(old_col, f"`{best_match}`")
+                            break
+                    
+                    # Try executing the fixed SQL
+                    try:
+                        if ENGINE is not None:
+                            df = pd.read_sql_query(fixed_sql, ENGINE)
+                        elif conn is not None:
+                            df = pd.read_sql_query(fixed_sql, conn)
+                        
+                        # If successful, continue with the rest of the function using the fixed result
+                        auto_fixed = True
+                        
+                    except Exception:
+                        # Auto-fix failed, return helpful error with suggestions
+                        suggestion_text = f" Did you mean: {', '.join(suggestions[:3])}?"
+                        raise HTTPException(status_code=400, detail=f"SQL execution error: Column '{problematic_col}' not found.{suggestion_text}")
+                else:
+                    # No good suggestions found
+                    raise HTTPException(status_code=400, detail=f"SQL execution error: {error_msg}")
+            else:
+                # Couldn't parse the column name, return original error
+                raise HTTPException(status_code=400, detail=f"SQL execution error: {error_msg}")
+        else:
+            # Not a column error, return original error
+            raise HTTPException(status_code=400, detail=f"SQL execution error: {error_msg}")
 
     # Convert DataFrame to records with proper JSON serialization
     try:
@@ -563,7 +624,7 @@ async def execute_sql(req: dict):
     except Exception:
         suggestions = []
 
-    return {"sql": sql, "rows": rows, "summary": summary_text or (f"{len(rows)} rows returned."), "table_preview": table_preview, "display_rows": display_rows, "suggestions": suggestions}
+    return {"sql": sql, "rows": rows, "summary": summary_text or (f"{len(rows)} rows returned."), "table_preview": table_preview, "display_rows": display_rows, "suggestions": suggestions, "auto_fixed": auto_fixed}
 
 
 @router.get('/db_info')
