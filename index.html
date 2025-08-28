@@ -7,46 +7,49 @@
   <title>HR Data Chat</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    /* Beautiful moving sky blue gradient background */
+    /* Ultra smooth moving sky blue gradient background */
     body {
       min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
-      background: linear-gradient(45deg, 
-        #87CEEB 0%,   /* Sky blue */
-        #E0F6FF 25%,  /* Light blue */
-        #B8E6FF 50%,  /* Powder blue */
-        #87CEFA 75%,  /* Light sky blue */
-        #ADD8E6 100%  /* Light blue */
+      background: linear-gradient(-45deg, 
+        #87CEEB,   /* Sky blue */
+        #E0F6FF,   /* Light blue */
+        #B8E6FF,   /* Powder blue */
+        #87CEFA,   /* Light sky blue */
+        #ADD8E6,   /* Light blue */
+        #E6F3FF,   /* Very light blue */
+        #B0E0E6,   /* Powder blue */
+        #87CEEB    /* Back to sky blue for seamless loop */
       );
-      background-size: 400% 400%;
-      animation: skyMove 15s ease-in-out infinite;
+      background-size: 600% 600%;
+      animation: smoothSkyMove 25s linear infinite;
       position: relative;
       overflow-x: hidden;
+      /* Hardware acceleration for ultra smooth performance */
+      will-change: background-position;
+      backface-visibility: hidden;
+      perspective: 1000px;
+      transform: translateZ(0);
     }
     
-    /* Smooth sky gradient animation */
-    @keyframes skyMove {
+    /* Ultra smooth gradient animation - only moves position */
+    @keyframes smoothSkyMove {
       0% { 
         background-position: 0% 50%; 
-        background: linear-gradient(45deg, #87CEEB, #E0F6FF, #B8E6FF, #87CEFA, #ADD8E6);
       }
       25% { 
-        background-position: 50% 0%; 
-        background: linear-gradient(135deg, #E0F6FF, #B8E6FF, #87CEFA, #ADD8E6, #E6F3FF);
+        background-position: 100% 50%; 
       }
       50% { 
-        background-position: 100% 50%; 
-        background: linear-gradient(225deg, #B8E6FF, #87CEFA, #ADD8E6, #E6F3FF, #87CEEB);
+        background-position: 100% 100%; 
       }
       75% { 
-        background-position: 50% 100%; 
-        background: linear-gradient(315deg, #87CEFA, #ADD8E6, #E6F3FF, #87CEEB, #E0F6FF);
+        background-position: 0% 100%; 
       }
       100% { 
         background-position: 0% 50%; 
-        background: linear-gradient(45deg, #87CEEB, #E0F6FF, #B8E6FF, #87CEFA, #ADD8E6);
       }
     }
     
@@ -148,7 +151,7 @@
                   inset 0 1px 0 rgba(255, 255, 255, 0.4);
     }
     
-    /* Subtle cloud-like effects */
+    /* Smoother cloud-like effects */
     body::before {
       content: '';
       position: absolute;
@@ -156,17 +159,34 @@
       left: 0;
       width: 100%;
       height: 100%;
-      background: radial-gradient(circle at 20% 80%, rgba(255, 255, 255, 0.1) 0%, transparent 50%),
-                  radial-gradient(circle at 80% 20%, rgba(255, 255, 255, 0.08) 0%, transparent 50%),
-                  radial-gradient(circle at 40% 40%, rgba(135, 206, 235, 0.05) 0%, transparent 50%);
-      animation: clouds 20s ease-in-out infinite;
+      background: radial-gradient(circle at 20% 80%, rgba(255, 255, 255, 0.08) 0%, transparent 60%),
+                  radial-gradient(circle at 80% 20%, rgba(255, 255, 255, 0.06) 0%, transparent 60%),
+                  radial-gradient(circle at 40% 40%, rgba(135, 206, 235, 0.04) 0%, transparent 60%);
+      animation: smoothClouds 30s linear infinite;
       pointer-events: none;
     }
     
-    @keyframes clouds {
-      0%, 100% { transform: translateX(0) translateY(0); }
-      33% { transform: translateX(-20px) translateY(-10px); }
-      66% { transform: translateX(20px) translateY(10px); }
+    @keyframes smoothClouds {
+      0% { 
+        transform: translateX(0) translateY(0); 
+        opacity: 0.8;
+      }
+      25% { 
+        transform: translateX(-15px) translateY(-8px); 
+        opacity: 1;
+      }
+      50% { 
+        transform: translateX(15px) translateY(8px); 
+        opacity: 0.9;
+      }
+      75% { 
+        transform: translateX(-8px) translateY(15px); 
+        opacity: 1;
+      }
+      100% { 
+        transform: translateX(0) translateY(0); 
+        opacity: 0.8;
+      }
     }
     
     @media (prefers-reduced-motion: reduce) {
