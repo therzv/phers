@@ -8,13 +8,14 @@ import pandas as pd
 from typing import List
 
 from core import (
-    DATA_DIR, UPLOADED_FILES, TABLE_COLUMNS, COLUMN_NAME_MAP,
+    DATA_DIR, UPLOADED_FILES, TABLE_COLUMNS, COLUMN_NAME_MAP, ACTIVE_FILES,
     load_dataframe_to_sql, initialize_data_folder, index_dataframe_to_chroma,
     INDEXING_STATUS, CHROMA_AVAILABLE, CHROMA_IDS_BY_FILE, chroma_collection,
     score_candidate_tables, normalize_question_text, build_schema_description,
     SQL_PROMPT_TEMPLATE, validate_sql_safe, validate_sql_against_schema,
     get_llm, PANDAS_AI_AVAILABLE, PANDASAI_LANGCHAIN_AVAILABLE, PandasAI, LangChain,
-    SQLPARSE_AVAILABLE, read_table_into_df, drop_table, suggest_column_alternatives
+    SQLPARSE_AVAILABLE, read_table_into_df, drop_table, suggest_column_alternatives,
+    get_active_files
 )
 from core import conn, ENGINE, SUMMARY_PROMPT_TEMPLATE
 from sqlalchemy import text
@@ -77,6 +78,7 @@ async def upload_file(file: UploadFile = File(...), background_tasks: Background
     try:
         table_name = load_dataframe_to_sql(df, os.path.splitext(filename)[0])
         UPLOADED_FILES[filename] = table_name
+        ACTIVE_FILES[filename] = True  # Activate new files by default
     except Exception as e:
         # Clean up saved file if database loading fails
         try:
@@ -121,8 +123,68 @@ async def index_status():
 async def list_files():
     files = []
     for orig, tbl in UPLOADED_FILES.items():
-        files.append({"filename": orig, "table": tbl, "columns": TABLE_COLUMNS.get(tbl, [])})
+        files.append({
+            "filename": orig, 
+            "table": tbl, 
+            "columns": TABLE_COLUMNS.get(tbl, []),
+            "active": ACTIVE_FILES.get(orig, False)
+        })
     return {"files": files}
+
+
+@router.post('/files/{filename}/toggle')
+async def toggle_file_activation(filename: str):
+    """Toggle file activation status."""
+    if filename not in UPLOADED_FILES:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    # Toggle the active status
+    current_status = ACTIVE_FILES.get(filename, False)
+    ACTIVE_FILES[filename] = not current_status
+    
+    return {
+        "filename": filename,
+        "active": ACTIVE_FILES[filename],
+        "message": f"File {'activated' if ACTIVE_FILES[filename] else 'deactivated'}"
+    }
+
+
+@router.post('/files/activate-all')
+async def activate_all_files():
+    """Activate all uploaded files."""
+    for filename in UPLOADED_FILES.keys():
+        ACTIVE_FILES[filename] = True
+    
+    active_count = len(UPLOADED_FILES)
+    return {"message": f"Activated {active_count} files", "active_files": list(UPLOADED_FILES.keys())}
+
+
+@router.post('/files/deactivate-all')
+async def deactivate_all_files():
+    """Deactivate all uploaded files."""
+    for filename in UPLOADED_FILES.keys():
+        ACTIVE_FILES[filename] = False
+    
+    return {"message": "Deactivated all files", "active_files": []}
+
+
+@router.get('/files/active')
+async def get_active_files_info():
+    """Get information about currently active files."""
+    active_files = get_active_files()
+    active_info = []
+    for filename, table in active_files.items():
+        active_info.append({
+            "filename": filename,
+            "table": table,
+            "columns": TABLE_COLUMNS.get(table, [])
+        })
+    
+    return {
+        "active_files": active_info,
+        "count": len(active_info),
+        "schema": build_schema_description()
+    }
 
 
 @router.delete('/files/{filename}')
@@ -140,6 +202,8 @@ async def delete_file(filename: str):
             TABLE_COLUMNS.pop(tbl, None)
         except Exception:
             pass
+    # Clean up activation status
+    ACTIVE_FILES.pop(filename, None)
     if CHROMA_AVAILABLE and filename in CHROMA_IDS_BY_FILE:
         try:
             chroma_collection.delete(ids=CHROMA_IDS_BY_FILE[filename])
@@ -156,6 +220,11 @@ async def chat(req: dict):
         raise HTTPException(status_code=400, detail="Empty question.")
     if not TABLE_COLUMNS:
         return JSONResponse({"error": "No tables loaded. Upload CSV/XLSX files first."}, status_code=400)
+    
+    # Check if any files are active
+    active_files = get_active_files()
+    if not active_files:
+        return JSONResponse({"error": "No files are currently active. Please activate at least one file to query data."}, status_code=400)
 
     use_pandas_ai = os.environ.get('USE_PANDAS_AI', '0') in ['1', 'true', 'True']
     if use_pandas_ai:

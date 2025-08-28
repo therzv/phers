@@ -102,6 +102,7 @@ except Exception:
 TABLE_COLUMNS: Dict[str, list] = {}
 UPLOADED_FILES: Dict[str, str] = {}
 COLUMN_NAME_MAP: Dict[str, Dict[str, str]] = {}
+ACTIVE_FILES: Dict[str, bool] = {}  # Track which files are active for queries
 QUESTION_REPLACEMENTS: List = []
 
 
@@ -560,12 +561,14 @@ def initialize_data_folder():
                 tbl = os.path.splitext(filename)[0]
                 table_name_safe = load_dataframe_to_sql(df, tbl)
                 UPLOADED_FILES[filename] = table_name_safe
+                ACTIVE_FILES[filename] = True  # Activate by default
                 print(f"Loaded CSV: {filename} -> table {tbl}")
             elif filename.lower().endswith((".xlsx", ".xls")):
                 df = pd.read_excel(path)
                 tbl = os.path.splitext(filename)[0]
                 table_name_safe = load_dataframe_to_sql(df, tbl)
                 UPLOADED_FILES[filename] = table_name_safe
+                ACTIVE_FILES[filename] = True  # Activate by default
                 print(f"Loaded XLSX: {filename} -> table {tbl}")
         except Exception as e:
             print(f"Failed to load {filename}: {e}")
@@ -593,10 +596,21 @@ LangChain = None
 
 
 def build_schema_description():
-    if not TABLE_COLUMNS:
-        return "NO_TABLES"
+    """Build schema description for only active files."""
+    active_files = get_active_files()
+    if not active_files:
+        return "NO_ACTIVE_TABLES"
+    
+    # Get tables from active files only
+    active_tables = set(active_files.values())
+    if not active_tables:
+        return "NO_ACTIVE_TABLES"
+    
     parts = []
     for t, cols in TABLE_COLUMNS.items():
+        if t not in active_tables:
+            continue  # Skip inactive tables
+            
         col_texts = []
         mapping = COLUMN_NAME_MAP.get(t, {})
         for c in cols:
@@ -606,7 +620,8 @@ def build_schema_description():
             else:
                 col_texts.append(c)
         parts.append(f"Table `{t}` with columns: {', '.join(col_texts)}")
-    return "\n".join(parts)
+    
+    return "\n".join(parts) if parts else "NO_ACTIVE_TABLES"
 
 
 def validate_sql_safe(sql: str):
@@ -830,10 +845,17 @@ def suggest_column_alternatives(invalid_column: str, table_name: str = None) -> 
     return suggestions[:3]  # Return top 3 suggestions
 
 
+def get_active_files() -> Dict[str, str]:
+    """Return only files that are currently active."""
+    return {fname: tbl for fname, tbl in UPLOADED_FILES.items() if ACTIVE_FILES.get(fname, False)}
+
+
 def score_candidate_tables(question: str) -> List[Dict[str, Any]]:
     q = (question or "").lower()
     candidates: List[Dict[str, Any]] = []
-    for fname, tbl in UPLOADED_FILES.items():
+    # Only consider active files
+    active_files = get_active_files()
+    for fname, tbl in active_files.items():
         score = 0.0
         if tbl.lower() in q or os.path.splitext(fname)[0].lower() in q:
             score += 1.0
@@ -841,7 +863,7 @@ def score_candidate_tables(question: str) -> List[Dict[str, Any]]:
         for c in cols:
             if c.lower() in q:
                 score += 0.5
-        candidates.append({"filename": fname, "table": tbl, "score": score})
+        candidates.append({"filename": fname, "table": tbl, "score": score, "active": True})
 
     if CHROMA_AVAILABLE and candidates:
         try:

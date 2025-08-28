@@ -56,7 +56,17 @@
         </div>
 
         <div>
-          <h3 class="text-sm font-medium mb-2">Uploaded</h3>
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="text-sm font-medium">Uploaded Files</h3>
+            <div class="flex gap-1">
+              <button id="activateAll" class="text-xs px-2 py-1 bg-emerald-100 text-emerald-700 rounded hover:bg-emerald-200">All On</button>
+              <button id="deactivateAll" class="text-xs px-2 py-1 bg-gray-100 text-gray-700 rounded hover:bg-gray-200">All Off</button>
+            </div>
+          </div>
+          <div id="activeFilesInfo" class="text-xs text-slate-600 mb-2 p-2 bg-blue-50 rounded hidden">
+            <div class="font-medium">Active Files:</div>
+            <div id="activeFilesList">None</div>
+          </div>
           <div id="filesList" class="space-y-2 max-h-40 overflow-auto text-sm"></div>
         </div>
         <div class="mt-4">
@@ -143,6 +153,10 @@ const activityFeed = document.getElementById('activityFeed');
 const sendBtn = document.getElementById('sendBtn');
 const sendText = sendBtn.querySelector('.send-text');
 const loadingText = sendBtn.querySelector('.loading-text');
+const activateAllBtn = document.getElementById('activateAll');
+const deactivateAllBtn = document.getElementById('deactivateAll');
+const activeFilesInfo = document.getElementById('activeFilesInfo');
+const activeFilesList = document.getElementById('activeFilesList');
 
 // Handle example question clicks
 document.querySelectorAll('.example-q').forEach(btn => {
@@ -151,6 +165,45 @@ document.querySelectorAll('.example-q').forEach(btn => {
     input.value = question;
     form.dispatchEvent(new Event('submit'));
   });
+});
+
+// Bulk activation controls
+activateAllBtn.addEventListener('click', async () => {
+  activateAllBtn.disabled = true;
+  activateAllBtn.innerText = 'Activating...';
+  try {
+    const res = await fetch('/files/activate-all', { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+      await loadFiles();
+      toast(data.message);
+    } else {
+      toast('Failed to activate all files');
+    }
+  } catch (e) {
+    toast('Request failed: ' + e);
+  }
+  activateAllBtn.disabled = false;
+  activateAllBtn.innerText = 'All On';
+});
+
+deactivateAllBtn.addEventListener('click', async () => {
+  deactivateAllBtn.disabled = true;
+  deactivateAllBtn.innerText = 'Deactivating...';
+  try {
+    const res = await fetch('/files/deactivate-all', { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+      await loadFiles();
+      toast(data.message);
+    } else {
+      toast('Failed to deactivate all files');
+    }
+  } catch (e) {
+    toast('Request failed: ' + e);
+  }
+  deactivateAllBtn.disabled = false;
+  deactivateAllBtn.innerText = 'All Off';
 });
 
 function setLoading(loading) {
@@ -285,10 +338,46 @@ async function loadFiles() {
     filesList.innerHTML = '';
     data.files.forEach(f=>{
       const el = document.createElement('div');
-  el.className = 'p-2 border rounded flex flex-col gap-2';
-  el.innerHTML = `<div class="flex items-center justify-between"><div><div class="font-medium">${f.filename}</div><div class="text-xs text-slate-500">table: ${f.table}</div></div></div><div class="w-full bg-slate-100 rounded h-2 overflow-hidden"><div id="bar-${f.filename}" class="h-2 bg-emerald-400" style="width:0%"></div></div>`;
+  el.className = `p-2 border rounded flex flex-col gap-2 ${f.active ? 'border-emerald-300 bg-emerald-50' : 'border-gray-200 bg-gray-50 opacity-75'}`;
+  el.innerHTML = `
+    <div class="flex items-center justify-between">
+      <div>
+        <div class="flex items-center gap-2">
+          <div class="font-medium">${f.filename}</div>
+          <span class="text-xs px-2 py-1 rounded-full ${f.active ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-500'}">${f.active ? '✓ Active' : '⭕ Inactive'}</span>
+        </div>
+        <div class="text-xs text-slate-500">table: ${f.table}</div>
+      </div>
+    </div>
+    <div class="w-full bg-slate-100 rounded h-2 overflow-hidden">
+      <div id="bar-${f.filename}" class="h-2 bg-emerald-400" style="width:0%"></div>
+    </div>`;
       const actions = document.createElement('div');
       actions.className = 'flex gap-2 mt-2';
+      
+      // activation toggle button
+      const toggle = document.createElement('button');
+      toggle.className = `px-2 py-1 rounded border text-xs ${f.active ? 'bg-orange-100 text-orange-700 border-orange-200 hover:bg-orange-200' : 'bg-emerald-100 text-emerald-700 border-emerald-200 hover:bg-emerald-200'}`;
+      toggle.innerText = f.active ? 'Deactivate' : 'Activate';
+      toggle.addEventListener('click', async ()=>{
+        toggle.disabled = true;
+        toggle.innerText = 'Updating...';
+        try{
+          const r = await fetch(`/files/${encodeURIComponent(f.filename)}/toggle`, { method: 'POST' });
+          const d = await r.json();
+          if (r.ok) {
+            await loadFiles(); // Refresh the file list
+            toast(d.message);
+          } else {
+            toast('Toggle failed: ' + (d.detail || JSON.stringify(d)));
+          }
+        }catch(e){
+          toast('Toggle request failed: ' + e);
+        }
+        toggle.disabled = false;
+      });
+      actions.appendChild(toggle);
+      
       // preview button
       const prev = document.createElement('button');
       prev.className = 'text-slate-700 px-2 py-1 rounded border bg-white hover:bg-slate-50 text-xs';
@@ -345,6 +434,17 @@ async function loadFiles() {
       el.appendChild(actions);
       filesList.appendChild(el);
     });
+    
+    // Update active files info
+    const activeFiles = data.files.filter(f => f.active);
+    if (activeFiles.length > 0) {
+      activeFilesInfo.classList.remove('hidden');
+      activeFilesList.innerHTML = activeFiles.map(f => f.filename).join(', ');
+    } else {
+      activeFilesInfo.classList.add('hidden');
+      activeFilesList.innerHTML = 'None';
+    }
+    
     // then fetch indexing statuses and update badges
     try{
       const st = await fetch('/index_status');
