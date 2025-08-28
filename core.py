@@ -750,8 +750,13 @@ INSTRUCTIONS (critical - follow exactly):
    - "total value/cost" = SUM(value_column)
    - "in repair/active/disposed" = WHERE status = 'Status'
    - "by location/category" = GROUP BY column
-7. Use LIKE for partial text matching when appropriate.
-8. Output ONLY the SQL inside <SQL>...</SQL> tags, nothing else.
+7. CRITICAL - Name searching strategy:
+   - Names may be stored as "Last, Title First" format (e.g., "Howard, Mr. Benjamin")
+   - For searching "John Smith", use: Name LIKE '%John%' AND Name LIKE '%Smith%'
+   - For searching "Benjamin Howard", use: Name LIKE '%Benjamin%' AND Name LIKE '%Howard%'
+   - Always use LIKE with % wildcards for name searches to handle different formats
+8. Use LIKE for partial text matching when appropriate.
+9. Output ONLY the SQL inside <SQL>...</SQL> tags, nothing else.
 
 User question: "{question}"
 
@@ -760,6 +765,7 @@ Common query patterns:
 - Sum: SELECT SUM(column) FROM table WHERE condition  
 - Group: SELECT column, COUNT(*) FROM table GROUP BY column
 - Filter: SELECT * FROM table WHERE column = 'value'
+- Name search: SELECT * FROM table WHERE Name LIKE '%FirstName%' AND Name LIKE '%LastName%'
 
 <SQL>SELECT ...</SQL>'''
 
