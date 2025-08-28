@@ -1136,6 +1136,67 @@ def sanitize_dataframe(df: pd.DataFrame, filename: str) -> Dict[str, Any]:
     }
 
 
+def reload_tables_from_database():
+    """Reload table structure from existing database into memory."""
+    if ENGINE is None and conn is None:
+        return
+    
+    try:
+        # Get all tables from database
+        if ENGINE is not None:
+            from sqlalchemy import text
+            with ENGINE.connect() as cx:
+                result = cx.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
+                tables = [row[0] for row in result.fetchall()]
+        elif conn is not None:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = [row[0] for row in cursor.fetchall()]
+        
+        # For each table, get its columns and populate TABLE_COLUMNS
+        for table_name in tables:
+            if table_name.startswith('sqlite_'):  # Skip system tables
+                continue
+                
+            try:
+                if ENGINE is not None:
+                    with ENGINE.connect() as cx:
+                        result = cx.execute(text(f"PRAGMA table_info({table_name})"))
+                        columns = [row[1] for row in result.fetchall()]  # Column name is at index 1
+                elif conn is not None:
+                    cursor = conn.cursor()
+                    cursor.execute(f"PRAGMA table_info({table_name})")
+                    columns = [row[1] for row in cursor.fetchall()]
+                
+                TABLE_COLUMNS[table_name] = columns
+                
+                # Try to find the original filename in data folder
+                possible_files = [
+                    f"{table_name}.csv",
+                    f"cleaned_{table_name}.csv",
+                    f"{table_name}.xlsx",
+                ]
+                
+                for possible_file in possible_files:
+                    file_path = os.path.join(DATA_DIR, possible_file)
+                    if os.path.exists(file_path):
+                        UPLOADED_FILES[possible_file] = table_name
+                        ACTIVE_FILES[possible_file] = True  # Activate by default
+                        break
+                else:
+                    # If no file found, create a placeholder
+                    UPLOADED_FILES[f"{table_name}.csv"] = table_name
+                    ACTIVE_FILES[f"{table_name}.csv"] = True
+                        
+                print(f"Reloaded table '{table_name}' with {len(columns)} columns")
+                
+            except Exception as e:
+                print(f"Failed to reload table '{table_name}': {e}")
+                
+    except Exception as e:
+        print(f"Failed to reload tables from database: {e}")
+
+
 def get_active_files() -> Dict[str, str]:
     """Return only files that are currently active."""
     return {fname: tbl for fname, tbl in UPLOADED_FILES.items() if ACTIVE_FILES.get(fname, False)}

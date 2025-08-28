@@ -17,7 +17,7 @@ from core import (
     SQLPARSE_AVAILABLE, read_table_into_df, drop_table, suggest_column_alternatives,
     get_active_files
 )
-from core import conn, ENGINE, SUMMARY_PROMPT_TEMPLATE
+from core import conn, ENGINE, SUMMARY_PROMPT_TEMPLATE, reload_tables_from_database
 from sqlalchemy import text
 import threading
 import re
@@ -421,11 +421,13 @@ async def execute_sql(req: dict):
     if not sql:
         raise HTTPException(status_code=400, detail="Empty SQL.")
     # quick check: ensure the SQL references at least one known uploaded table
+    import re
     used_tables = [t for t in TABLE_COLUMNS.keys() if re.search(r"\b" + re.escape(t) + r"\b", sql, flags=re.IGNORECASE)]
     if not used_tables:
         # offer candidate files/tables to the UI so it can suggest choices
         candidates = score_candidate_tables(question or sql)
         # return a friendly error with candidates (UI will render suggestions)
+        import json
         raise HTTPException(status_code=400, detail="No known table referenced in the SQL.", headers={"X-Candidates": json.dumps(candidates)})
     # safety checks and cleaning
     sql = validate_sql_safe(sql)
@@ -688,6 +690,15 @@ async def execute_sql(req: dict):
             "serialization_error": str(json_err)
         }
 
+
+@router.post('/reload_tables')
+async def reload_tables():
+    """Reload table structure from database into memory."""
+    try:
+        reload_tables_from_database()
+        return {"status": "success", "message": f"Reloaded {len(TABLE_COLUMNS)} tables", "tables": list(TABLE_COLUMNS.keys())}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reload tables: {e}")
 
 @router.get('/db_info')
 async def db_info():
