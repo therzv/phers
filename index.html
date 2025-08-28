@@ -293,7 +293,7 @@ function parseSummary(summaryRaw){
 async function renderAssistantResponse(resp, title){
   // resp: { summary, table_preview, suggestions }
   const summaryText = parseSummary(resp.summary || resp.text || '');
-  const wrapper = addMessage('assistant', title ? title + '\n' + summaryText : (summaryText || 'No summary'), resp.table_preview || resp.rows || []);
+  const wrapper = addMessage('assistant', title ? title + '\n' + summaryText : (summaryText || 'No summary'), []);
   // suggestions
   const suggestions = resp.suggestions || [];
   if(suggestions && suggestions.length){
