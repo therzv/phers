@@ -16,6 +16,16 @@ import math
 import difflib
 from fastapi import HTTPException  # lightweight dependency used for validation errors
 
+# Import our new sanitization modules
+try:
+    from sanitization import data_sanitizer
+    from sql_security import sql_security
+    SANITIZATION_AVAILABLE = True
+    print("Data sanitization modules loaded successfully")
+except ImportError as e:
+    print(f"Warning: Could not load sanitization modules: {e}")
+    SANITIZATION_AVAILABLE = False
+
 # Optional pandas-ai integration (fast prototype mode) — lazy import in routes to avoid hard dependency at module import
 PANDAS_AI_AVAILABLE = False
 PANDASAI_LANGCHAIN_AVAILABLE = False
@@ -1018,8 +1028,45 @@ def generate_intelligent_query_suggestion(original_query: str, failed_column: st
 
 def sanitize_dataframe(df: pd.DataFrame, filename: str) -> Dict[str, Any]:
     """
-    Comprehensive data sanitation to prevent SQL issues and improve indexing.
-    Returns sanitization report and cleaned DataFrame.
+    Modern comprehensive data sanitization using modular sanitization system.
+    Returns sanitization report and cleaned DataFrame with enhanced security.
+    """
+    if SANITIZATION_AVAILABLE:
+        # Use the new modular sanitization system
+        try:
+            result = data_sanitizer.clean_csv_data(df, filename)
+            
+            # Convert new format to legacy format for backward compatibility
+            legacy_report = {
+                "filename": filename,
+                "original_columns": list(df.columns),
+                "cleaned_columns": list(result["cleaned_df"].columns),
+                "issues_found": result["report"]["issues_found"],
+                "issues_fixed": result["report"]["issues_fixed"],
+                "rows_processed": len(df),
+                "data_changes": result["report"].get("column_mapping", {}),
+                "quality_warnings": result["report"].get("quality_warnings", []),
+                "sanitization_method": "modular_system"
+            }
+            
+            return {
+                "cleaned_df": result["cleaned_df"],
+                "report": legacy_report,
+                "needs_cleaning": result["needs_cleaning"],
+                "security_enhanced": True
+            }
+            
+        except Exception as e:
+            print(f"Error in modular sanitization, falling back to legacy: {e}")
+            # Fall through to legacy system
+    
+    # Legacy sanitization system (fallback)
+    return _legacy_sanitize_dataframe(df, filename)
+
+
+def _legacy_sanitize_dataframe(df: pd.DataFrame, filename: str) -> Dict[str, Any]:
+    """
+    Legacy data sanitization system (fallback when modular system fails).
     """
     sanitation_report = {
         "filename": filename,
@@ -1028,125 +1075,55 @@ def sanitize_dataframe(df: pd.DataFrame, filename: str) -> Dict[str, Any]:
         "issues_found": [],
         "issues_fixed": [],
         "rows_processed": len(df),
-        "data_changes": []
+        "data_changes": [],
+        "sanitization_method": "legacy_fallback"
     }
     
-    # Stage 1: Column Name Sanitation
+    # Simple column cleaning
     column_mapping = {}
-    problematic_chars = {
-        ' ': '_',           # Spaces to underscores
-        ':': '_',           # Colons to underscores  
-        ';': '_',           # Semicolons to underscores
-        ',': '_',           # Commas to underscores
-        '(': '_',           # Parentheses to underscores
-        ')': '_',
-        '[': '_',           # Brackets to underscores
-        ']': '_',
-        '{': '_',           # Braces to underscores
-        '}': '_',
-        '"': '',            # Remove quotes
-        "'": '',            # Remove quotes
-        '`': '',            # Remove backticks
-        '%': 'pct',         # Percent to 'pct'
-        '$': 'dollar',      # Dollar to 'dollar'
-        '#': 'num',         # Hash to 'num'
-        '@': 'at',          # At to 'at'
-        '&': 'and',         # Ampersand to 'and'
-        '+': 'plus',        # Plus to 'plus'
-        '=': 'eq',          # Equals to 'eq'
-        '<': 'lt',          # Less than to 'lt'
-        '>': 'gt',          # Greater than to 'gt'
-        '?': '',            # Remove question marks
-        '!': '',            # Remove exclamation marks
-        '*': 'star',        # Asterisk to 'star'
-        '/': '_',           # Forward slash to underscore
-        '\\': '_',          # Backslash to underscore
-        '|': '_',           # Pipe to underscore
-        '~': '_',           # Tilde to underscore
-        '^': '_',           # Caret to underscore
-        '-': '_',           # Dashes to underscores (except in data)
-    }
-    
     for original_col in df.columns:
-        cleaned_col = original_col
-        found_issues = []
-        
-        # Apply character replacements
-        for bad_char, replacement in problematic_chars.items():
-            if bad_char in cleaned_col:
-                found_issues.append(f"'{bad_char}' → '{replacement}'")
-                cleaned_col = cleaned_col.replace(bad_char, replacement)
-        
-        # Clean up multiple underscores
+        # Basic cleaning for SQL safety
+        cleaned_col = re.sub(r'[^\w]', '_', str(original_col))
         cleaned_col = re.sub(r'_+', '_', cleaned_col)
-        # Remove leading/trailing underscores
         cleaned_col = cleaned_col.strip('_')
         
-        # Ensure column name starts with letter or underscore (SQL requirement)
-        if cleaned_col and not cleaned_col[0].isalpha() and cleaned_col[0] != '_':
-            cleaned_col = 'col_' + cleaned_col
-            found_issues.append("Added 'col_' prefix (SQL requirement)")
-        
-        # Handle empty column names
-        if not cleaned_col:
-            cleaned_col = f'column_{df.columns.get_loc(original_col)}'
-            found_issues.append("Empty name → assigned generic name")
+        if not cleaned_col or cleaned_col.isdigit():
+            cleaned_col = f'col_{len(column_mapping)}'
         
         column_mapping[original_col] = cleaned_col
         
-        if found_issues:
+        if cleaned_col != original_col:
             sanitation_report["issues_found"].append({
                 "type": "column_name",
                 "original": original_col,
                 "cleaned": cleaned_col,
-                "issues": found_issues
+                "issues": ["Basic SQL safety cleaning applied"]
             })
     
     # Apply column renaming
     df_cleaned = df.rename(columns=column_mapping)
     sanitation_report["cleaned_columns"] = list(df_cleaned.columns)
     
-    # Stage 2: Data Value Sanitation
+    # Basic data cleaning
     data_issues = 0
     for col in df_cleaned.columns:
-        if df_cleaned[col].dtype == 'object':  # String columns
-            # Count problematic values before cleaning
-            problematic_mask = df_cleaned[col].astype(str).str.contains(r'[;\'"`]', na=False)
-            problematic_count = problematic_mask.sum()
-            
-            if problematic_count > 0:
-                data_issues += problematic_count
-                
-                # Clean data values (less aggressive than column names)
-                df_cleaned[col] = df_cleaned[col].astype(str).apply(lambda x: 
-                    x.replace('"', "'")       # Double quotes to single quotes
-                     .replace('`', "'")       # Backticks to single quotes  
-                     .replace(';', ',')       # Semicolons to commas
-                     .replace('\n', ' ')      # Newlines to spaces
-                     .replace('\r', ' ')      # Carriage returns to spaces
-                     .replace('\t', ' ')      # Tabs to spaces
-                )
-                
-                sanitation_report["data_changes"].append({
-                    "column": col,
-                    "issues_fixed": int(problematic_count),
-                    "description": "Cleaned quotes, semicolons, and whitespace"
-                })
+        if df_cleaned[col].dtype == 'object':
+            # Simple quote escaping
+            original_count = df_cleaned[col].astype(str).str.contains(r"'", na=False).sum()
+            if original_count > 0:
+                df_cleaned[col] = df_cleaned[col].astype(str).str.replace("'", "''", regex=False)
+                data_issues += original_count
     
-    # Stage 3: Generate Summary
-    total_column_issues = len(sanitation_report["issues_found"])
     sanitation_report["issues_fixed"] = [
-        f"{total_column_issues} column names sanitized",
-        f"{data_issues} data values cleaned" if data_issues > 0 else "No data value issues found"
+        f"{len(sanitation_report['issues_found'])} column names cleaned",
+        f"{data_issues} data values escaped for SQL safety"
     ]
-    
-    # Remove empty data changes
-    sanitation_report["data_changes"] = [dc for dc in sanitation_report["data_changes"] if dc["issues_fixed"] > 0]
     
     return {
         "cleaned_df": df_cleaned,
         "report": sanitation_report,
-        "needs_cleaning": total_column_issues > 0 or data_issues > 0
+        "needs_cleaning": len(sanitation_report["issues_found"]) > 0 or data_issues > 0,
+        "security_enhanced": False
     }
 
 

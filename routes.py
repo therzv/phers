@@ -15,8 +15,16 @@ from core import (
     SQL_PROMPT_TEMPLATE, validate_sql_safe, validate_sql_against_schema,
     get_llm, PANDAS_AI_AVAILABLE, PANDASAI_LANGCHAIN_AVAILABLE, PandasAI, LangChain,
     SQLPARSE_AVAILABLE, read_table_into_df, drop_table, suggest_column_alternatives,
-    get_active_files, generate_smart_suggestions
+    get_active_files, generate_smart_suggestions, SANITIZATION_AVAILABLE
 )
+
+# Import sanitization modules
+if SANITIZATION_AVAILABLE:
+    from sanitization import data_sanitizer
+    from sql_security import sql_security
+    print("Sanitization modules loaded in routes.py")
+else:
+    print("Warning: Sanitization modules not available in routes.py")
 from core import conn, ENGINE, SUMMARY_PROMPT_TEMPLATE, reload_tables_from_database
 from sqlalchemy import text
 import threading
@@ -239,9 +247,27 @@ async def delete_file(filename: str):
 
 @router.post('/chat')
 async def chat(req: dict):
-    question = (req.get('question') or '').strip()
-    if not question:
+    # Step 1: Sanitize user input immediately
+    raw_question = (req.get('question') or '').strip()
+    
+    if not raw_question:
         raise HTTPException(status_code=400, detail="Empty question.")
+    
+    # Step 2: Apply input sanitization if available
+    if SANITIZATION_AVAILABLE:
+        question = data_sanitizer.sanitize_user_input(raw_question, "general")
+        if not question:
+            raise HTTPException(status_code=400, detail="Question became empty after security sanitization.")
+        # Log if significant changes were made
+        if len(question) < len(raw_question) * 0.7:
+            print(f"Warning: User input heavily sanitized. Original: '{raw_question}' -> Sanitized: '{question}'")
+    else:
+        # Basic sanitization fallback
+        question = re.sub(r'[<>"|\\;]', '', raw_question)
+        question = question.strip()
+        if not question:
+            raise HTTPException(status_code=400, detail="Question contains invalid characters.")
+    
     if not TABLE_COLUMNS:
         return JSONResponse({"error": "No tables loaded. Upload CSV/XLSX files first."}, status_code=400)
     
@@ -323,32 +349,75 @@ async def chat(req: dict):
     # Pattern: "what is the manufacture/manufacturer of asset tag X"
     asset_tag_match = re.search(r"(?:manufacture|manufacturer).*asset.*tag.*([A-Z0-9-]+)", question, re.IGNORECASE)
     if asset_tag_match:
-        asset_tag = asset_tag_match.group(1)
+        raw_asset_tag = asset_tag_match.group(1)
+        
+        # Sanitize the asset tag input
+        if SANITIZATION_AVAILABLE:
+            asset_tag = data_sanitizer.sanitize_user_input(raw_asset_tag, "asset_tag")
+        else:
+            asset_tag = re.sub(r'[^A-Za-z0-9\-_]', '', raw_asset_tag)
+        
+        if not asset_tag:
+            raise HTTPException(status_code=400, detail="Invalid asset tag format.")
+        
         # Try to find the table with Asset_TAG column
         target_table = None
         for table_name, columns in TABLE_COLUMNS.items():
             if 'Asset_TAG' in columns:
                 target_table = table_name
                 break
+        
         if target_table:
-            sql = f'SELECT * FROM "{target_table}" WHERE "Asset_TAG" = \'{asset_tag}\''
-            print(f"Generated SQL: {sql}")
-            print(f"Target table: {target_table}")
-            print(f"Available tables: {list(TABLE_COLUMNS.keys())}")
+            # Create secure parameterized query
+            if SANITIZATION_AVAILABLE:
+                sql_template, params = sql_security.build_safe_select_query(
+                    table_name=target_table,
+                    where_conditions={"Asset_TAG": asset_tag}
+                )
+                sql = sql_template  # This will be executed safely later
+                # Store params for later use in execute_sql
+                setattr(chat, '_secure_params', params)
+                setattr(chat, '_is_parameterized', True)
+            else:
+                # Fallback with manual escaping  
+                safe_asset_tag = asset_tag.replace("'", "''")
+                sql = f'SELECT * FROM "{target_table}" WHERE "Asset_TAG" = \'{safe_asset_tag}\''
+                
+            print(f"Generated secure SQL for asset tag: {asset_tag}")
     
     # Pattern: "manufacturer of X" or "who made X"  
     if not sql:
         manufacturer_match = re.search(r"(?:manufacturer|made|who made).*?([A-Z0-9-]+)", question, re.IGNORECASE)
         if manufacturer_match:
-            search_term = manufacturer_match.group(1)
+            raw_search_term = manufacturer_match.group(1)
+            
+            # Sanitize the search term
+            if SANITIZATION_AVAILABLE:
+                search_term = data_sanitizer.sanitize_user_input(raw_search_term, "manufacturer")
+            else:
+                search_term = re.sub(r'[^A-Za-z0-9\s\-_]', '', raw_search_term)
+            
+            if not search_term:
+                raise HTTPException(status_code=400, detail="Invalid search term.")
+            
             # Find a table with Asset_TAG column and search for the term
             target_table = None
             for table_name, columns in TABLE_COLUMNS.items():
                 if 'Asset_TAG' in columns:
                     target_table = table_name
                     break
+            
             if target_table:
-                sql = f'SELECT * FROM "{target_table}" WHERE "Asset_TAG" LIKE \'%{search_term}%\' OR "Manufacturer" LIKE \'%{search_term}%\''
+                if SANITIZATION_AVAILABLE:
+                    # Build secure LIKE query - this needs custom handling since build_safe_select_query doesn't support LIKE with OR
+                    safe_search = f"%{search_term}%"
+                    sql = f'SELECT * FROM "{target_table}" WHERE "Asset_TAG" LIKE ? OR "Manufacturer" LIKE ?'
+                    setattr(chat, '_secure_params', [safe_search, safe_search])
+                    setattr(chat, '_is_parameterized', True)
+                else:
+                    # Fallback with manual escaping
+                    safe_search_term = search_term.replace("'", "''")
+                    sql = f'SELECT * FROM "{target_table}" WHERE "Asset_TAG" LIKE \'%{safe_search_term}%\' OR "Manufacturer" LIKE \'%{safe_search_term}%\''
     
     # If no pattern matched, use LLM
     if not sql:
@@ -454,8 +523,17 @@ async def debug_sql(question: str):
 async def execute_sql(req: dict):
     sql = (req.get('sql') or '').strip()
     question = (req.get('question') or '').strip()
+    
+    # Sanitize question input
+    if question and SANITIZATION_AVAILABLE:
+        question = data_sanitizer.sanitize_user_input(question, "general")
+    
     if not sql:
         raise HTTPException(status_code=400, detail="Empty SQL.")
+    
+    # Check if this is a parameterized query from chat endpoint
+    secure_params = getattr(req, '_secure_params', None) or req.get('_secure_params', None)
+    is_parameterized = getattr(req, '_is_parameterized', False) or req.get('_is_parameterized', False)
     # quick check: ensure the SQL references at least one known uploaded table
     import re
     used_tables = [t for t in TABLE_COLUMNS.keys() if re.search(r"\b" + re.escape(t) + r"\b", sql, flags=re.IGNORECASE)]
@@ -477,13 +555,41 @@ async def execute_sql(req: dict):
 
     auto_fixed = False  # Track if we auto-fixed any issues
     try:
-        if ENGINE is not None:
-            # pandas accepts SQLAlchemy engine
-            df = pd.read_sql_query(sql, ENGINE)
-        elif conn is not None:
-            df = pd.read_sql_query(sql, conn)
+        # Use secure parameterized execution if available
+        if is_parameterized and SANITIZATION_AVAILABLE and secure_params:
+            print(f"Executing parameterized query with {len(secure_params)} parameters")
+            try:
+                # Handle different parameter formats
+                if isinstance(secure_params, dict):
+                    param_dict = secure_params
+                elif isinstance(secure_params, list):
+                    param_dict = {f"param_{i}": p for i, p in enumerate(secure_params)}
+                else:
+                    param_dict = {"param_0": secure_params}
+                
+                if ENGINE is not None:
+                    df = sql_security.execute_safe_query(sql, param_dict, ENGINE)
+                elif conn is not None:
+                    df = sql_security.execute_safe_query(sql, param_dict, conn)
+                else:
+                    raise Exception('No database engine available')
+            except Exception as secure_error:
+                print(f"Secure execution failed: {secure_error}, falling back to traditional")
+                # Fall back to traditional execution
+                if ENGINE is not None:
+                    df = pd.read_sql_query(sql, ENGINE)
+                elif conn is not None:
+                    df = pd.read_sql_query(sql, conn)
+                else:
+                    raise Exception('No database engine available')
         else:
-            raise Exception('No database engine available')
+            # Traditional execution (with validation)
+            if ENGINE is not None:
+                df = pd.read_sql_query(sql, ENGINE)
+            elif conn is not None:
+                df = pd.read_sql_query(sql, conn)
+            else:
+                raise Exception('No database engine available')
     except Exception as e:
         error_msg = str(e)
         
