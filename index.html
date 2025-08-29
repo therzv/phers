@@ -571,6 +571,16 @@ async function renderAssistantResponse(resp, title){
           }
           // render the response (natural language + preview)
           await renderAssistantResponse(d, `Result for suggestion: ${label}`);
+          
+          // Reset button to normal state after successful execution
+          btn.disabled = false;
+          btn.innerHTML = `
+            <span class="text-lg">${icon}</span>
+            <span class="font-medium">${label}</span>
+            <svg class="w-4 h-4 text-slate-400 group-hover:text-blue-500 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+            </svg>
+          `;
         }catch(err){
           toast('Suggestion request failed: ' + err);
           btn.disabled = false;
