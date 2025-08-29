@@ -18,7 +18,7 @@ import time
 import logging
 import json
 import psutil
-from typing import Dict, List, Optional, Any, Iterator, Union
+from typing import Dict, List, Optional, Any, Iterator, Union, Callable
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 from collections import deque, defaultdict

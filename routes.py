@@ -71,6 +71,18 @@ try:
 except ImportError as e:
     print(f"Warning: Phase 4 modules not available: {e}")
     PERFORMANCE_OPTIMIZATION_AVAILABLE = False
+
+# Import Natural Language Response modules
+NATURAL_RESPONSE_AVAILABLE = False
+try:
+    from data_cleansing_pipeline import enterprise_cleaner
+    from natural_response_generator import natural_response_generator, QueryContext, ResponseContext
+    from smart_suggestion_engine import smart_suggestion_engine, SuggestionContext
+    NATURAL_RESPONSE_AVAILABLE = True
+    print("Natural Language Response modules loaded")
+except ImportError as e:
+    print(f"Warning: Natural Language Response modules not available: {e}")
+    NATURAL_RESPONSE_AVAILABLE = False
 from core import conn, ENGINE, SUMMARY_PROMPT_TEMPLATE, reload_tables_from_database
 from sqlalchemy import text
 import threading
@@ -969,48 +981,121 @@ async def execute_sql(req: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to process query results: {e}")
 
-    # Summarize the rows with the LLM if available
+    # Generate natural language summary using Phi4 LLM integration
     summary_text = ""
     table_preview = rows[:10]
     
-    # TEMPORARY: Disable LLM summary to eliminate JSON errors
-    # Generate a simple, safe summary instead
-    if len(rows) == 1:
-        row = rows[0]
-        summary_text = f"Found 1 matching record."
-        
-        # Smart summary based on the original question using dynamic column detection
-        if COLUMN_INTELLIGENCE_AVAILABLE:
-            # Use dynamic column detection for intelligent summaries
-            summary_text = _generate_dynamic_summary(question, row)
-        else:
-            # Legacy hardcoded summary generation
-            if 'asset tag' in question.lower() and 'Asset_TAG' in row:
-                summary_text = f"The asset tag is: {row['Asset_TAG']}"
-            elif 'manufacturer' in question.lower() and 'Manufacturer' in row:
-                summary_text = f"The manufacturer is: {row['Manufacturer']}"
-            elif 'username' in question.lower():
-                # For username queries, show relevant info
-                info_parts = []
-                if 'Asset_TAG' in row and row['Asset_TAG']:
-                    info_parts.append(f"Asset tag: {row['Asset_TAG']}")
-                if 'Manufacturer' in row and row['Manufacturer']:
-                    info_parts.append(f"Device: {row['Manufacturer']}")
-                if 'item_Name' in row and row['item_Name']:
-                    info_parts.append(f"Item: {row['item_Name']}")
-                
-                if info_parts:
-                    summary_text = f"Found record for user. {', '.join(info_parts)}"
-    elif len(rows) > 1:
-        summary_text = f"Found {len(rows)} matching records."
-        if 'Manufacturer' in rows[0]:
-            manufacturers = list(set(row.get('Manufacturer', 'Unknown') for row in rows[:5]))
-            if len(manufacturers) == 1:
-                summary_text = f"Found {len(rows)} records. The manufacturer is: {manufacturers[0]}"
+    if NATURAL_RESPONSE_AVAILABLE:
+        try:
+            # Build context for natural response generation
+            available_columns = []
+            column_data_samples = {}
+            
+            # Get column information from active tables
+            for table_name in active_files:
+                if table_name in TABLE_COLUMNS:
+                    available_columns.extend(TABLE_COLUMNS[table_name])
+            
+            # Get sample data from the results or table
+            if rows:
+                # Sample from actual results
+                sample_data = rows[:5] if len(rows) >= 5 else rows
+                for col in sample_data[0].keys() if sample_data else []:
+                    column_data_samples[col] = [str(row.get(col, '')) for row in sample_data if row.get(col) is not None]
             else:
-                summary_text = f"Found {len(rows)} records with manufacturers: {', '.join(manufacturers[:3])}"
+                # No results, get samples from table for suggestions
+                for table_name in active_files:
+                    try:
+                        sample_df = read_table_into_df(table_name, limit=5)
+                        for col in sample_df.columns:
+                            column_data_samples[col] = sample_df[col].astype(str).dropna().tolist()[:5]
+                    except:
+                        continue
+            
+            # Create suggestion context for smart suggestions
+            suggestion_context = SuggestionContext(
+                available_columns=list(set(available_columns)),
+                column_data_samples=column_data_samples,
+                data_domain='general',  # Could be enhanced to detect domain
+                user_query_history=[],  # Could be enhanced with session history
+                common_search_patterns={},
+                dataset_size=len(rows),
+                column_types={}  # Could be enhanced with type detection
+            )
+            
+            # Build query context
+            query_context = QueryContext(
+                original_query=question,
+                sql_query=sql,
+                intent_analysis=query_analysis if 'query_analysis' in locals() else None,
+                suggested_tables=active_files,
+                column_mappings=COLUMN_NAME_MAP,
+                query_confidence=1.0,
+                expected_result_type='data_retrieval'
+            )
+            
+            # Build response context
+            response_context = ResponseContext(
+                results=rows,
+                result_count=len(rows),
+                query_success=len(rows) > 0,
+                execution_time=0.0,  # Could be enhanced with actual timing
+                suggested_actions=[],
+                data_insights={}
+            )
+            
+            # Generate natural language response
+            if len(rows) > 0:
+                # Successful query with results
+                natural_response = natural_response_generator.generate_response(
+                    query_context, response_context, suggestion_context
+                )
+                summary_text = natural_response
+                print(f"Natural Language Response: Generated conversational summary")
+            else:
+                # No results - generate suggestions with fuzzy matching
+                similar_values = smart_suggestion_engine.find_similar_values(
+                    question, suggestion_context
+                )
+                
+                if similar_values:
+                    # Found similar matches - generate helpful response
+                    suggestion_text = natural_response_generator.generate_no_results_response(
+                        query_context, similar_values[:3], suggestion_context
+                    )
+                    summary_text = suggestion_text
+                    print(f"Natural Language Response: Generated suggestion response with {len(similar_values)} matches")
+                else:
+                    # No similar matches - generate exploration response
+                    exploration_response = natural_response_generator.generate_exploration_response(
+                        query_context, suggestion_context
+                    )
+                    summary_text = exploration_response
+                    print(f"Natural Language Response: Generated exploration response")
+                    
+        except Exception as natural_response_error:
+            print(f"Natural Language Response: Error generating response: {natural_response_error}")
+            # Fallback to basic response
+            if len(rows) == 1:
+                summary_text = f"Found 1 matching record."
+            elif len(rows) > 1:
+                summary_text = f"Found {len(rows)} matching records."
+            else:
+                summary_text = "No matching records found."
     else:
-        summary_text = "No matching records found."
+        # Fallback when natural language modules not available
+        if len(rows) == 1:
+            row = rows[0]
+            summary_text = f"Found 1 matching record."
+            
+            # Smart summary based on the original question using dynamic column detection
+            if COLUMN_INTELLIGENCE_AVAILABLE:
+                # Use dynamic column detection for intelligent summaries
+                summary_text = _generate_dynamic_summary(question, row)
+        elif len(rows) > 1:
+            summary_text = f"Found {len(rows)} matching records."
+        else:
+            summary_text = "No matching records found."
     
     # COMMENTED OUT: LLM summary was causing JSON errors - disabled temporarily
 
