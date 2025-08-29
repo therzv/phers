@@ -971,9 +971,24 @@ async def execute_sql(req: dict):
                         auto_fixed = True
                         
                     except Exception:
-                        # Auto-fix failed, return helpful error with suggestions
-                        suggestion_text = f" Did you mean: {', '.join(suggestions[:3])}?"
-                        raise HTTPException(status_code=400, detail=f"SQL execution error: Column '{problematic_col}' not found.{suggestion_text}")
+                        # Auto-fix failed, check if user meant table name instead of column
+                        available_tables = list(get_active_files().values())
+                        if problematic_col in available_tables:
+                            # User likely wants to see all data from this table
+                            table_corrected_sql = f"SELECT * FROM `{problematic_col}` LIMIT 10"
+                            try:
+                                if ENGINE is not None:
+                                    df = pd.read_sql_query(table_corrected_sql, ENGINE)
+                                elif conn is not None:
+                                    df = pd.read_sql_query(table_corrected_sql, conn)
+                                auto_fixed = True
+                                print(f"Auto-corrected: User asked about table '{problematic_col}', showing table contents")
+                            except Exception:
+                                suggestion_text = f" Did you mean: {', '.join(suggestions[:3])}? Or did you want to see the '{problematic_col}' table?"
+                                raise HTTPException(status_code=400, detail=f"SQL execution error: Column '{problematic_col}' not found.{suggestion_text}")
+                        else:
+                            suggestion_text = f" Did you mean: {', '.join(suggestions[:3])}?"
+                            raise HTTPException(status_code=400, detail=f"SQL execution error: Column '{problematic_col}' not found.{suggestion_text}")
                 else:
                     # No good suggestions found
                     raise HTTPException(status_code=400, detail=f"SQL execution error: {error_msg}")
@@ -1091,6 +1106,8 @@ async def execute_sql(req: dict):
                     
         except Exception as natural_response_error:
             print(f"Natural Language Response: Error generating response: {natural_response_error}")
+            import traceback
+            print(f"Natural Language Response: Traceback: {traceback.format_exc()}")
             # Fallback to basic response
             if len(rows) == 1:
                 summary_text = f"Found 1 matching record."
