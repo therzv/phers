@@ -26,6 +26,16 @@ except ImportError as e:
     print(f"Warning: Could not load sanitization modules: {e}")
     SANITIZATION_AVAILABLE = False
 
+# Import dynamic column intelligence modules
+try:
+    from column_intelligence import column_intelligence
+    from dynamic_mapping import dynamic_mapper
+    COLUMN_INTELLIGENCE_AVAILABLE = True
+    print("Column intelligence modules loaded successfully")
+except ImportError as e:
+    print(f"Warning: Could not load column intelligence modules: {e}")
+    COLUMN_INTELLIGENCE_AVAILABLE = False
+
 # Optional pandas-ai integration (fast prototype mode) — lazy import in routes to avoid hard dependency at module import
 PANDAS_AI_AVAILABLE = False
 PANDASAI_LANGCHAIN_AVAILABLE = False
@@ -461,7 +471,7 @@ def get_llm():
 
 
 def load_dataframe_to_sql(df: pd.DataFrame, table_name: str):
-    """Load DataFrame to SQL with improved data normalization."""
+    """Load DataFrame to SQL with improved data normalization and column intelligence."""
     table_name_safe = re.sub(r"[^\w\d_]", "_", table_name).lower()
     
     # Clean the DataFrame first
@@ -540,6 +550,24 @@ def load_dataframe_to_sql(df: pd.DataFrame, table_name: str):
     cols = list(df.columns)
     TABLE_COLUMNS[table_name_safe] = cols
     COLUMN_NAME_MAP[table_name_safe] = col_map
+    
+    # Phase 1: Analyze column structure and create dynamic mappings
+    if COLUMN_INTELLIGENCE_AVAILABLE:
+        try:
+            print(f"Analyzing column structure for '{table_name_safe}'...")
+            analysis = dynamic_mapper.analyze_and_map_table(df, table_name_safe)
+            
+            detected_roles = list(analysis.get("role_mappings", {}).keys())
+            high_conf_roles = [role for role, columns in analysis.get("role_mappings", {}).items() 
+                             if columns and columns[0]["confidence"] > 0.7]
+            
+            print(f"✅ Column intelligence analysis complete:")
+            print(f"   📊 Detected {len(detected_roles)} semantic roles: {detected_roles}")
+            print(f"   🎯 High confidence roles: {high_conf_roles}")
+            
+        except Exception as e:
+            print(f"⚠️  Column intelligence analysis failed: {e}")
+            # Don't fail the entire load if analysis fails
     
     print(f"Successfully loaded {len(df)} rows and {len(cols)} columns to table '{table_name_safe}'")
     return table_name_safe

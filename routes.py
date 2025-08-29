@@ -15,7 +15,7 @@ from core import (
     SQL_PROMPT_TEMPLATE, validate_sql_safe, validate_sql_against_schema,
     get_llm, PANDAS_AI_AVAILABLE, PANDASAI_LANGCHAIN_AVAILABLE, PandasAI, LangChain,
     SQLPARSE_AVAILABLE, read_table_into_df, drop_table, suggest_column_alternatives,
-    get_active_files, generate_smart_suggestions, SANITIZATION_AVAILABLE
+    get_active_files, generate_smart_suggestions, SANITIZATION_AVAILABLE, COLUMN_INTELLIGENCE_AVAILABLE
 )
 
 # Import sanitization modules
@@ -25,10 +25,133 @@ if SANITIZATION_AVAILABLE:
     print("Sanitization modules loaded in routes.py")
 else:
     print("Warning: Sanitization modules not available in routes.py")
+
+# Import column intelligence modules  
+if COLUMN_INTELLIGENCE_AVAILABLE:
+    from column_intelligence import column_intelligence
+    from dynamic_mapping import dynamic_mapper
+    print("Column intelligence modules loaded in routes.py")
+else:
+    print("Warning: Column intelligence modules not available in routes.py")
+
+# Import Phase 2: Advanced Query Intelligence modules
+QUERY_INTELLIGENCE_AVAILABLE = False
+try:
+    from query_intelligence import query_intelligence
+    from multi_table_intelligence import multi_table_intelligence  
+    from context_engine import context_engine
+    QUERY_INTELLIGENCE_AVAILABLE = True
+    print("Phase 2: Advanced Query Intelligence modules loaded")
+except ImportError as e:
+    print(f"Warning: Phase 2 modules not available: {e}")
+    QUERY_INTELLIGENCE_AVAILABLE = False
+
+# Import Phase 3: AI-Powered Query Generation modules
+AI_GENERATION_AVAILABLE = False
+try:
+    from ai_query_generator import ai_query_generator
+    from query_refinement import query_refinement
+    from conversation_manager import conversation_manager
+    AI_GENERATION_AVAILABLE = True
+    print("Phase 3: AI-Powered Query Generation modules loaded")
+except ImportError as e:
+    print(f"Warning: Phase 3 modules not available: {e}")
+    AI_GENERATION_AVAILABLE = False
+
+# Import Phase 4: Performance Optimization modules
+PERFORMANCE_OPTIMIZATION_AVAILABLE = False
+try:
+    from intelligent_cache import get_intelligent_cache
+    from database_optimizer import get_database_optimizer
+    from performance_monitor import get_performance_monitor
+    from memory_manager import get_memory_manager
+    from scalability_manager import get_scalability_manager
+    PERFORMANCE_OPTIMIZATION_AVAILABLE = True
+    print("Phase 4: Performance Optimization modules loaded")
+except ImportError as e:
+    print(f"Warning: Phase 4 modules not available: {e}")
+    PERFORMANCE_OPTIMIZATION_AVAILABLE = False
 from core import conn, ENGINE, SUMMARY_PROMPT_TEMPLATE, reload_tables_from_database
 from sqlalchemy import text
 import threading
 import re
+import time
+
+
+def _generate_dynamic_summary(question: str, row: dict) -> str:
+    """
+    Generate intelligent summary using dynamic column detection.
+    
+    Args:
+        question: Original user question
+        row: Single result row
+        
+    Returns:
+        Contextual summary based on detected column roles
+    """
+    if not COLUMN_INTELLIGENCE_AVAILABLE:
+        return "Found 1 matching record."
+    
+    question_lower = question.lower()
+    
+    # Analyze what the user is asking about
+    if any(term in question_lower for term in ['asset', 'tag', 'id', 'identifier']):
+        # Look for identifier-type columns in the row
+        for col_name, col_value in row.items():
+            if col_value and any(pattern in col_name.lower() for pattern in ['tag', 'id', 'asset', 'code']):
+                return f"The identifier is: {col_value}"
+    
+    elif any(term in question_lower for term in ['manufacturer', 'brand', 'make', 'company']):
+        # Look for manufacturer-type columns
+        for col_name, col_value in row.items():
+            if col_value and any(pattern in col_name.lower() for pattern in ['manufacturer', 'brand', 'company', 'make']):
+                return f"The manufacturer is: {col_value}"
+    
+    elif any(term in question_lower for term in ['user', 'name', 'person', 'employee']):
+        # User query - show multiple relevant fields
+        info_parts = []
+        
+        # Find identifier
+        for col_name, col_value in row.items():
+            if col_value and any(pattern in col_name.lower() for pattern in ['tag', 'id', 'asset']):
+                info_parts.append(f"ID: {col_value}")
+                break
+        
+        # Find manufacturer/device
+        for col_name, col_value in row.items():
+            if col_value and any(pattern in col_name.lower() for pattern in ['manufacturer', 'brand']):
+                info_parts.append(f"Device: {col_value}")
+                break
+        
+        # Find product/item
+        for col_name, col_value in row.items():
+            if col_value and any(pattern in col_name.lower() for pattern in ['item', 'product', 'model']):
+                info_parts.append(f"Item: {col_value}")
+                break
+        
+        if info_parts:
+            return f"Found record for user. {', '.join(info_parts)}"
+    
+    elif any(term in question_lower for term in ['product', 'item', 'model', 'device']):
+        # Look for product-type columns
+        for col_name, col_value in row.items():
+            if col_value and any(pattern in col_name.lower() for pattern in ['item', 'product', 'model', 'name']):
+                return f"The item is: {col_value}"
+    
+    elif any(term in question_lower for term in ['location', 'where', 'place']):
+        # Look for location columns
+        for col_name, col_value in row.items():
+            if col_value and any(pattern in col_name.lower() for pattern in ['location', 'place', 'site', 'building']):
+                return f"The location is: {col_value}"
+    
+    elif any(term in question_lower for term in ['price', 'cost', 'value', 'money']):
+        # Look for money columns
+        for col_name, col_value in row.items():
+            if col_value and any(pattern in col_name.lower() for pattern in ['price', 'cost', 'value', 'amount']):
+                return f"The cost is: {col_value}"
+    
+    # Default fallback
+    return "Found 1 matching record."
 import sys
 import importlib
 
@@ -275,6 +398,88 @@ async def chat(req: dict):
     active_files = get_active_files()
     if not active_files:
         return JSONResponse({"error": "No files are currently active. Please activate at least one file to query data."}, status_code=400)
+    
+    # Phase 2: Advanced Query Intelligence
+    query_analysis = None
+    query_context = None
+    multi_table_analysis = None
+    
+    if QUERY_INTELLIGENCE_AVAILABLE:
+        # Step 1: Get context for query interpretation
+        query_context = context_engine.get_context_for_query(question)
+        print(f"Phase 2: Context confidence: {query_context.get('context_confidence', 0.0):.2f}")
+        
+        # Step 2: Analyze query intent with advanced intelligence
+        query_analysis = query_intelligence.analyze_query_intent(question)
+        print(f"Phase 2: Intent '{query_analysis['intent']}' with confidence {query_analysis['confidence']:.2f}")
+        
+        # Step 3: Analyze table relationships if multi-table query needed
+        if query_analysis['complexity_score'] > 5:
+            # Get table information for relationship analysis
+            table_info = {}
+            for table_name in TABLE_COLUMNS.keys():
+                if table_name in dynamic_mapper.table_analyses:
+                    table_info[table_name] = dynamic_mapper.table_analyses[table_name]
+            
+            if len(table_info) > 1:
+                multi_table_analysis = multi_table_intelligence.analyze_table_relationships(table_info)
+                print(f"Phase 2: Found {len(multi_table_analysis['direct_relationships'])} table relationships")
+        
+        # Add context hints to response for debugging/transparency
+        if query_context.get('disambiguation_hints'):
+            print(f"Phase 2: Disambiguation hints: {query_context['disambiguation_hints']}")
+        if query_context.get('query_suggestions'):
+            print(f"Phase 2: Query suggestions: {query_context['query_suggestions']}")
+    else:
+        print("Phase 2: Advanced Query Intelligence not available, using basic processing")
+    
+    # Phase 3: AI-Powered Query Generation
+    conversation_result = None
+    ai_generated_sql = None
+    query_optimization = None
+    
+    if AI_GENERATION_AVAILABLE and QUERY_INTELLIGENCE_AVAILABLE:
+        try:
+            # Step 1: Process conversational context
+            conversation_result = conversation_manager.process_conversational_query(
+                question, query_analysis, None  # previous_results would come from session
+            )
+            print(f"Phase 3: Conversation type: {conversation_result.get('conversation_type', 'initial')}")
+            
+            # Step 2: Generate enhanced AI query
+            table_info = {}
+            for table_name in TABLE_COLUMNS.keys():
+                if table_name in dynamic_mapper.table_analyses:
+                    table_info[table_name] = dynamic_mapper.table_analyses[table_name]
+            
+            if table_info:
+                schema = build_schema_description()
+                ai_result = ai_query_generator.generate_enhanced_query(
+                    question=conversation_result.get('enhanced_query', question),
+                    query_analysis=query_analysis,
+                    table_info=table_info,
+                    schema=schema,
+                    context=query_context,
+                    multi_table_plan=multi_table_analysis if 'multi_table_analysis' in locals() else None
+                )
+                
+                ai_generated_sql = ai_result.get('sql', '')
+                print(f"Phase 3: AI generated SQL with {ai_result.get('confidence', 0.0):.2f} confidence")
+                
+                # Step 3: Optimize the generated query if needed
+                if ai_generated_sql:
+                    query_optimization = query_refinement.optimize_query(
+                        ai_generated_sql, 
+                        performance_metrics=None,  # Would come from execution
+                        table_info=table_info
+                    )
+                    print(f"Phase 3: Applied {len(query_optimization.get('optimizations_applied', []))} optimizations")
+        
+        except Exception as phase3_error:
+            print(f"Phase 3: Error in AI generation: {phase3_error}")
+            # Continue with fallback processing
+    else:
+        print("Phase 3: AI-Powered Query Generation not available, using standard processing")
 
     use_pandas_ai = os.environ.get('USE_PANDAS_AI', '0') in ['1', 'true', 'True']
     if use_pandas_ai:
@@ -343,13 +548,57 @@ async def chat(req: dict):
     schema = build_schema_description()
     sql_prompt = SQL_PROMPT_TEMPLATE.format(schema=schema, question=normalized_q)
     
-    # Add simple pattern matching for common queries before calling slow LLM
+    # Phase 4: Performance Optimization - Initialize components
+    phase4_cache_key = None
+    phase4_performance_start = time.time()
+    
+    if PERFORMANCE_OPTIMIZATION_AVAILABLE:
+        try:
+            # Initialize Phase 4 components
+            intelligent_cache = get_intelligent_cache()
+            performance_monitor = get_performance_monitor()
+            
+            # Check cache first
+            phase4_cache_key = f"query_{hash(question + str(active_files))}"
+            cached_result = intelligent_cache.get(phase4_cache_key, category="query_results")
+            
+            if cached_result:
+                print("Phase 4: Cache HIT - Returning cached result")
+                performance_monitor.track_query_performance(
+                    question, 0.001, cache_hits=1, cache_misses=0
+                )
+                return JSONResponse(cached_result)
+            else:
+                print("Phase 4: Cache MISS - Processing query")
+                
+        except Exception as e:
+            print(f"Phase 4: Cache initialization error: {e}")
+    
+    # Phase 3: Use AI-generated SQL if available and confident
     sql = None
     
-    # Pattern: "what is the manufacture/manufacturer of asset tag X"
-    asset_tag_match = re.search(r"(?:manufacture|manufacturer).*asset.*tag.*([A-Z0-9-]+)", question, re.IGNORECASE)
-    if asset_tag_match:
-        raw_asset_tag = asset_tag_match.group(1)
+    if AI_GENERATION_AVAILABLE and ai_generated_sql and ai_result.get('confidence', 0.0) > 0.7:
+        sql = query_optimization.get('optimized_sql', ai_generated_sql) if query_optimization else ai_generated_sql
+        print(f"Phase 3: Using AI-generated SQL (confidence: {ai_result.get('confidence', 0.0):.2f})")
+        
+        # Add Phase 3 metadata to response
+        phase3_metadata = {
+            'ai_generated': True,
+            'ai_confidence': ai_result.get('confidence', 0.0),
+            'optimizations_applied': query_optimization.get('optimizations_applied', []) if query_optimization else [],
+            'conversation_type': conversation_result.get('conversation_type', 'initial') if conversation_result else 'initial'
+        }
+    else:
+        # Fallback to pattern matching and LLM as before
+        print("Phase 3: AI confidence too low or not available, using pattern matching + LLM")
+        phase3_metadata = {'ai_generated': False}
+    
+    # Add simple pattern matching for common queries before calling slow LLM (if not using AI SQL)
+    if sql is None:
+        # Pattern: "what is the manufacture/manufacturer of asset tag X"
+        asset_tag_match = re.search(r"(?:manufacture|manufacturer).*asset.*tag.*([A-Z0-9-]+)", question, re.IGNORECASE)
+        if asset_tag_match:
+            raw_asset_tag = asset_tag_match.group(1)
         
         # Sanitize the asset tag input
         if SANITIZATION_AVAILABLE:
@@ -360,28 +609,43 @@ async def chat(req: dict):
         if not asset_tag:
             raise HTTPException(status_code=400, detail="Invalid asset tag format.")
         
-        # Try to find the table with Asset_TAG column
+        # Use dynamic column detection to find tables with identifier columns
         target_table = None
-        for table_name, columns in TABLE_COLUMNS.items():
-            if 'Asset_TAG' in columns:
-                target_table = table_name
-                break
+        target_column = None
         
-        if target_table:
-            # Create secure parameterized query
+        if COLUMN_INTELLIGENCE_AVAILABLE:
+            # Find table with identifier role (asset tags, IDs, etc.)
+            identifier_tables = dynamic_mapper.suggest_tables_for_role('identifier')
+            if identifier_tables:
+                best_match = identifier_tables[0]  # Highest confidence
+                target_table = best_match['table_name']
+                target_column = best_match['column_name']
+                print(f"Dynamic detection: Using {target_table}.{target_column} for identifier (confidence: {best_match['confidence']:.2f})")
+        
+        # Fallback to legacy hardcoded approach
+        if not target_table:
+            for table_name, columns in TABLE_COLUMNS.items():
+                if 'Asset_TAG' in columns:
+                    target_table = table_name
+                    target_column = 'Asset_TAG'
+                    print(f"Legacy fallback: Using {target_table}.{target_column}")
+                    break
+        
+        if target_table and target_column:
+            # Create secure parameterized query using dynamic column detection
             if SANITIZATION_AVAILABLE:
                 sql_template, params = sql_security.build_safe_select_query(
                     table_name=target_table,
-                    where_conditions={"Asset_TAG": asset_tag}
+                    where_conditions={target_column: asset_tag}
                 )
                 sql = sql_template  # This will be executed safely later
                 # Store params for later use in execute_sql
                 setattr(chat, '_secure_params', params)
                 setattr(chat, '_is_parameterized', True)
             else:
-                # Fallback with manual escaping  
+                # Fallback with manual escaping using dynamic column
                 safe_asset_tag = asset_tag.replace("'", "''")
-                sql = f'SELECT * FROM "{target_table}" WHERE "Asset_TAG" = \'{safe_asset_tag}\''
+                sql = f'SELECT * FROM "{target_table}" WHERE "{target_column}" = \'{safe_asset_tag}\''
                 
             print(f"Generated secure SQL for asset tag: {asset_tag}")
     
@@ -400,24 +664,49 @@ async def chat(req: dict):
             if not search_term:
                 raise HTTPException(status_code=400, detail="Invalid search term.")
             
-            # Find a table with Asset_TAG column and search for the term
+            # Use dynamic column detection to find relevant tables
             target_table = None
-            for table_name, columns in TABLE_COLUMNS.items():
-                if 'Asset_TAG' in columns:
-                    target_table = table_name
-                    break
+            identifier_column = None
+            manufacturer_column = None
             
-            if target_table:
+            if COLUMN_INTELLIGENCE_AVAILABLE:
+                # Find tables with both identifier and manufacturer roles
+                identifier_tables = dynamic_mapper.suggest_tables_for_role('identifier')
+                manufacturer_tables = dynamic_mapper.suggest_tables_for_role('manufacturer')
+                
+                # Find common table with both roles
+                identifier_table_names = {t['table_name'] for t in identifier_tables}
+                manufacturer_table_names = {t['table_name'] for t in manufacturer_tables}
+                common_tables = identifier_table_names.intersection(manufacturer_table_names)
+                
+                if common_tables:
+                    target_table = list(common_tables)[0]
+                    # Get column names for this table
+                    identifier_column = dynamic_mapper.get_column_for_role(target_table, 'identifier')
+                    manufacturer_column = dynamic_mapper.get_column_for_role(target_table, 'manufacturer')
+                    print(f"Dynamic detection: Using {target_table} with {identifier_column} and {manufacturer_column}")
+            
+            # Fallback to legacy approach
+            if not target_table:
+                for table_name, columns in TABLE_COLUMNS.items():
+                    if 'Asset_TAG' in columns:
+                        target_table = table_name
+                        identifier_column = 'Asset_TAG'
+                        manufacturer_column = 'Manufacturer'
+                        print(f"Legacy fallback: Using {target_table} with hardcoded columns")
+                        break
+            
+            if target_table and identifier_column and manufacturer_column:
                 if SANITIZATION_AVAILABLE:
-                    # Build secure LIKE query - this needs custom handling since build_safe_select_query doesn't support LIKE with OR
+                    # Build secure LIKE query with dynamic columns
                     safe_search = f"%{search_term}%"
-                    sql = f'SELECT * FROM "{target_table}" WHERE "Asset_TAG" LIKE ? OR "Manufacturer" LIKE ?'
+                    sql = f'SELECT * FROM "{target_table}" WHERE "{identifier_column}" LIKE ? OR "{manufacturer_column}" LIKE ?'
                     setattr(chat, '_secure_params', [safe_search, safe_search])
                     setattr(chat, '_is_parameterized', True)
                 else:
-                    # Fallback with manual escaping
+                    # Fallback with manual escaping using dynamic columns
                     safe_search_term = search_term.replace("'", "''")
-                    sql = f'SELECT * FROM "{target_table}" WHERE "Asset_TAG" LIKE \'%{safe_search_term}%\' OR "Manufacturer" LIKE \'%{safe_search_term}%\''
+                    sql = f'SELECT * FROM "{target_table}" WHERE "{identifier_column}" LIKE \'%{safe_search_term}%\' OR "{manufacturer_column}" LIKE \'%{safe_search_term}%\''
     
     # If no pattern matched, use LLM
     if not sql:
@@ -464,7 +753,18 @@ async def chat(req: dict):
                 pass
         return found
     inferred_tables = infer_tables_from_sql(sql)
-    return {"sql": sql, "suggestions": suggestions, "inferred_tables": inferred_tables}
+    
+    # Add Phase 3 metadata to response
+    response = {"sql": sql, "suggestions": suggestions, "inferred_tables": inferred_tables}
+    
+    if AI_GENERATION_AVAILABLE and 'phase3_metadata' in locals():
+        response.update({
+            "phase3_metadata": phase3_metadata,
+            "conversation_suggestions": conversation_result.get('suggested_followups', []) if conversation_result else [],
+            "query_optimizations": query_optimization.get('suggestions', []) if query_optimization else []
+        })
+    
+    return response
 
 
 @router.get('/health')
@@ -523,6 +823,9 @@ async def debug_sql(question: str):
 async def execute_sql(req: dict):
     sql = (req.get('sql') or '').strip()
     question = (req.get('question') or '').strip()
+    
+    # Phase 4: Performance monitoring start
+    execution_start_time = time.time()
     
     # Sanitize question input
     if question and SANITIZATION_AVAILABLE:
@@ -676,23 +979,28 @@ async def execute_sql(req: dict):
         row = rows[0]
         summary_text = f"Found 1 matching record."
         
-        # Smart summary based on the original question
-        if 'asset tag' in question.lower() and 'Asset_TAG' in row:
-            summary_text = f"The asset tag is: {row['Asset_TAG']}"
-        elif 'manufacturer' in question.lower() and 'Manufacturer' in row:
-            summary_text = f"The manufacturer is: {row['Manufacturer']}"
-        elif 'username' in question.lower():
-            # For username queries, show relevant info
-            info_parts = []
-            if 'Asset_TAG' in row and row['Asset_TAG']:
-                info_parts.append(f"Asset tag: {row['Asset_TAG']}")
-            if 'Manufacturer' in row and row['Manufacturer']:
-                info_parts.append(f"Device: {row['Manufacturer']}")
-            if 'item_Name' in row and row['item_Name']:
-                info_parts.append(f"Item: {row['item_Name']}")
-            
-            if info_parts:
-                summary_text = f"Found record for user. {', '.join(info_parts)}"
+        # Smart summary based on the original question using dynamic column detection
+        if COLUMN_INTELLIGENCE_AVAILABLE:
+            # Use dynamic column detection for intelligent summaries
+            summary_text = _generate_dynamic_summary(question, row)
+        else:
+            # Legacy hardcoded summary generation
+            if 'asset tag' in question.lower() and 'Asset_TAG' in row:
+                summary_text = f"The asset tag is: {row['Asset_TAG']}"
+            elif 'manufacturer' in question.lower() and 'Manufacturer' in row:
+                summary_text = f"The manufacturer is: {row['Manufacturer']}"
+            elif 'username' in question.lower():
+                # For username queries, show relevant info
+                info_parts = []
+                if 'Asset_TAG' in row and row['Asset_TAG']:
+                    info_parts.append(f"Asset tag: {row['Asset_TAG']}")
+                if 'Manufacturer' in row and row['Manufacturer']:
+                    info_parts.append(f"Device: {row['Manufacturer']}")
+                if 'item_Name' in row and row['item_Name']:
+                    info_parts.append(f"Item: {row['item_Name']}")
+                
+                if info_parts:
+                    summary_text = f"Found record for user. {', '.join(info_parts)}"
     elif len(rows) > 1:
         summary_text = f"Found {len(rows)} matching records."
         if 'Manufacturer' in rows[0]:
@@ -768,6 +1076,69 @@ async def execute_sql(req: dict):
         # Test JSON serialization before returning
         import json
         json.dumps(response_data, default=str, ensure_ascii=False)
+        
+        # Phase 2: Record query results for context learning
+        if QUERY_INTELLIGENCE_AVAILABLE and 'query_analysis' in locals():
+            try:
+                # Prepare execution result for context learning
+                execution_result = {
+                    'success': len(rows) > 0 or auto_fixed,
+                    'rows_returned': len(rows),
+                    'tables_used': inferred_tables if 'inferred_tables' in locals() else [],
+                    'summary_generated': bool(summary_text),
+                    'auto_fixed': auto_fixed,
+                    'performance': {
+                        'result_size': len(rows),
+                        'suggestions_count': len(safe_suggestions)
+                    }
+                }
+                
+                # Add to conversation history for learning
+                original_question = req.get('question', '')
+                if original_question and query_analysis:
+                    context_engine.add_query_to_history(
+                        query=original_question,
+                        query_analysis=query_analysis,
+                        execution_result=execution_result
+                    )
+                    print(f"Phase 2: Query recorded in context engine")
+                
+            except Exception as context_error:
+                print(f"Phase 2: Error recording query context: {context_error}")
+        
+        # Phase 4: Performance tracking and caching
+        if PERFORMANCE_OPTIMIZATION_AVAILABLE:
+            try:
+                execution_time = time.time() - execution_start_time
+                
+                # Track performance
+                performance_monitor = get_performance_monitor()
+                performance_monitor.track_query_performance(
+                    sql, execution_time, len(rows), cache_hits=0, cache_misses=1
+                )
+                
+                # Analyze query for optimization opportunities
+                database_optimizer = get_database_optimizer()
+                database_optimizer.analyze_query_execution(sql, execution_time, len(rows))
+                
+                # Cache successful results (not errors or empty results)
+                if len(rows) > 0 and not auto_fixed:
+                    intelligent_cache = get_intelligent_cache()
+                    cache_key = f"sql_{hash(sql)}"
+                    intelligent_cache.set(cache_key, response_data, category="query_results")
+                    print(f"Phase 4: Cached query result ({len(rows)} rows)")
+                
+                # Add performance metadata to response
+                response_data['phase4_performance'] = {
+                    'execution_time': execution_time,
+                    'rows_processed': len(rows),
+                    'cached': False  # First execution, not from cache
+                }
+                
+                print(f"Phase 4: Query executed in {execution_time:.3f}s, {len(rows)} rows")
+                
+            except Exception as phase4_error:
+                print(f"Phase 4: Performance tracking error: {phase4_error}")
         
         return response_data
     except Exception as json_err:
