@@ -270,15 +270,10 @@ async def upload_file(file: UploadFile = File(...), background_tasks: Background
     
     # Include sanitation report if cleaning was performed  
     if sanitation_report and sanitation_report.get("issues_found"):
-        # Ensure sanitation report is also JSON serializable
-        safe_sanitation_report = {}
-        for key, value in sanitation_report.items():
-            if isinstance(value, (str, int, float, bool, list, dict, type(None))):
-                safe_sanitation_report[key] = value
-            else:
-                safe_sanitation_report[key] = str(value)
-        response["sanitation_report"] = safe_sanitation_report
+        # Temporarily disable sanitation report to isolate JSON serialization issue
+        print(f"Sanitation completed with {sanitation_report.get('issues_found', 0)} issues found")
         response["sanitized"] = True
+        # Note: sanitation_report temporarily disabled due to numpy serialization issues
         
     return response
 
