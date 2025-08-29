@@ -569,18 +569,22 @@ async function renderAssistantResponse(resp, title){
             `;
             return;
           }
-          // render the response (natural language + preview)
-          await renderAssistantResponse(d, `Result for suggestion: ${label}`);
+          // Hide the suggestions panel and show result inline (better UX)
+          const suggestionsContainer = btn.closest('.bg-gradient-to-r');
+          if (suggestionsContainer) {
+            // Replace suggestions panel with a simple "Used suggestion" message
+            suggestionsContainer.innerHTML = `
+              <div class="flex items-center gap-2 text-sm text-slate-600">
+                <svg class="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                  <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+                </svg>
+                Used suggestion: ${label}
+              </div>
+            `;
+          }
           
-          // Reset button to normal state after successful execution
-          btn.disabled = false;
-          btn.innerHTML = `
-            <span class="text-lg">${icon}</span>
-            <span class="font-medium">${label}</span>
-            <svg class="w-4 h-4 text-slate-400 group-hover:text-blue-500 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-            </svg>
-          `;
+          // Add the result as a new message
+          await renderAssistantResponse(d, `Result:`)
         }catch(err){
           toast('Suggestion request failed: ' + err);
           btn.disabled = false;
