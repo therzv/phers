@@ -482,7 +482,8 @@ function parseSummary(summaryRaw){
 async function renderAssistantResponse(resp, title){
   // resp: { summary, table_preview, suggestions }
   const summaryText = parseSummary(resp.summary || resp.text || '');
-  const wrapper = addMessage('assistant', title ? title + '\n' + summaryText : (summaryText || 'No summary'), []);
+  const tableData = resp.table_preview || resp.display_rows || resp.rows || [];
+  const wrapper = addMessage('assistant', title ? title + '\n' + summaryText : (summaryText || 'No summary'), tableData);
   // Beautiful AI-powered suggestions
   const suggestions = resp.suggestions || [];
   if(suggestions && suggestions.length){

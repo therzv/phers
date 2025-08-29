@@ -567,9 +567,26 @@ async def execute_sql(req: dict):
     # TEMPORARY: Disable LLM summary to eliminate JSON errors
     # Generate a simple, safe summary instead
     if len(rows) == 1:
+        row = rows[0]
         summary_text = f"Found 1 matching record."
-        if 'Manufacturer' in rows[0]:
-            summary_text = f"The manufacturer is: {rows[0]['Manufacturer']}"
+        
+        # Smart summary based on the original question
+        if 'asset tag' in question.lower() and 'Asset_TAG' in row:
+            summary_text = f"The asset tag is: {row['Asset_TAG']}"
+        elif 'manufacturer' in question.lower() and 'Manufacturer' in row:
+            summary_text = f"The manufacturer is: {row['Manufacturer']}"
+        elif 'username' in question.lower():
+            # For username queries, show relevant info
+            info_parts = []
+            if 'Asset_TAG' in row and row['Asset_TAG']:
+                info_parts.append(f"Asset tag: {row['Asset_TAG']}")
+            if 'Manufacturer' in row and row['Manufacturer']:
+                info_parts.append(f"Device: {row['Manufacturer']}")
+            if 'item_Name' in row and row['item_Name']:
+                info_parts.append(f"Item: {row['item_Name']}")
+            
+            if info_parts:
+                summary_text = f"Found record for user. {', '.join(info_parts)}"
     elif len(rows) > 1:
         summary_text = f"Found {len(rows)} matching records."
         if 'Manufacturer' in rows[0]:
