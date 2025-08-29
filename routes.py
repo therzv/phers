@@ -257,11 +257,27 @@ async def upload_file(file: UploadFile = File(...), background_tasks: Background
             t.start()
     except Exception:
         pass
-    response = {"status": "ok", "table": table_name, "columns": TABLE_COLUMNS[table_name]}
+    # Ensure columns are JSON serializable (convert numpy types to Python types)
+    columns = TABLE_COLUMNS[table_name]
+    safe_columns = []
+    for col in columns:
+        if isinstance(col, str):
+            safe_columns.append(col)
+        else:
+            safe_columns.append(str(col))
     
-    # Include sanitation report if cleaning was performed
+    response = {"status": "ok", "table": table_name, "columns": safe_columns}
+    
+    # Include sanitation report if cleaning was performed  
     if sanitation_report and sanitation_report.get("issues_found"):
-        response["sanitation_report"] = sanitation_report
+        # Ensure sanitation report is also JSON serializable
+        safe_sanitation_report = {}
+        for key, value in sanitation_report.items():
+            if isinstance(value, (str, int, float, bool, list, dict, type(None))):
+                safe_sanitation_report[key] = value
+            else:
+                safe_sanitation_report[key] = str(value)
+        response["sanitation_report"] = safe_sanitation_report
         response["sanitized"] = True
         
     return response
