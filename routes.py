@@ -777,17 +777,17 @@ async def chat(req: dict):
         return found
     inferred_tables = infer_tables_from_sql(sql)
     
-    # Add Phase 3 metadata to response
-    response = {"sql": sql, "suggestions": suggestions, "inferred_tables": inferred_tables}
-    
+    # Store Phase 3 metadata for later inclusion in final response
+    phase3_response_metadata = {}
     if AI_GENERATION_AVAILABLE and 'phase3_metadata' in locals():
-        response.update({
+        phase3_response_metadata = {
             "phase3_metadata": phase3_metadata,
             "conversation_suggestions": conversation_result.get('suggested_followups', []) if conversation_result else [],
             "query_optimizations": query_optimization.get('suggestions', []) if query_optimization else []
-        })
+        }
     
-    return response
+    # Continue to execute SQL and generate natural language response
+    # (Remove early return to allow natural language response generation)
 
 
 @router.get('/health')
@@ -1012,6 +1012,8 @@ async def execute_sql(req: dict):
     table_preview = rows[:10]
     
     if NATURAL_RESPONSE_AVAILABLE:
+        print(f"🤖 Natural Language Response: Starting generation for query: '{question}'")
+        print(f"🤖 Natural Language Response: Found {len(rows)} rows")
         try:
             # Build context for natural response generation
             available_columns = []
@@ -1073,31 +1075,36 @@ async def execute_sql(req: dict):
             # Generate natural language response
             if len(rows) > 0:
                 # Successful query with results
+                print(f"🤖 Natural Language Response: Generating success response for {len(rows)} rows")
                 natural_response = natural_response_generator.generate_response(
                     query_context, response_context, suggestion_context
                 )
                 summary_text = natural_response
-                print(f"Natural Language Response: Generated conversational summary")
+                print(f"🤖 Natural Language Response: Generated conversational summary: '{summary_text[:100]}...'")
             else:
                 # No results - generate suggestions with fuzzy matching
+                print(f"🤖 Natural Language Response: No rows found, generating suggestions...")
                 similar_values = smart_suggestion_engine.find_similar_values(
                     question, suggestion_context
                 )
+                print(f"🤖 Natural Language Response: Found {len(similar_values)} similar values")
                 
                 if similar_values:
                     # Found similar matches - generate helpful response
+                    print(f"🤖 Natural Language Response: Generating suggestion response...")
                     suggestion_text = natural_response_generator.generate_no_results_response(
                         query_context, similar_values[:3], suggestion_context
                     )
                     summary_text = suggestion_text
-                    print(f"Natural Language Response: Generated suggestion response with {len(similar_values)} matches")
+                    print(f"🤖 Natural Language Response: Generated suggestion response: '{summary_text[:100]}...'")
                 else:
                     # No similar matches - generate exploration response
+                    print(f"🤖 Natural Language Response: No similar values, generating exploration response...")
                     exploration_response = natural_response_generator.generate_exploration_response(
                         query_context, suggestion_context
                     )
                     summary_text = exploration_response
-                    print(f"Natural Language Response: Generated exploration response")
+                    print(f"🤖 Natural Language Response: Generated exploration response: '{summary_text[:100]}...'")
                     
         except Exception as natural_response_error:
             print(f"Natural Language Response: Error generating response: {natural_response_error}")
@@ -1112,6 +1119,8 @@ async def execute_sql(req: dict):
                 summary_text = "No matching records found."
     else:
         # Fallback when natural language modules not available
+        print(f"❌ Natural Language Response: NATURAL_RESPONSE_AVAILABLE = {NATURAL_RESPONSE_AVAILABLE}")
+        print(f"❌ Natural Language Response: Using fallback responses")
         if len(rows) == 1:
             row = rows[0]
             summary_text = f"Found 1 matching record."
@@ -1183,8 +1192,13 @@ async def execute_sql(req: dict):
             "table_preview": table_preview, 
             "display_rows": display_rows, 
             "suggestions": safe_suggestions, 
-            "auto_fixed": bool(auto_fixed if 'auto_fixed' in locals() else False)
+            "auto_fixed": bool(auto_fixed if 'auto_fixed' in locals() else False),
+            "inferred_tables": inferred_tables if 'inferred_tables' in locals() else []
         }
+        
+        # Add Phase 3 metadata if available
+        if 'phase3_response_metadata' in locals() and phase3_response_metadata:
+            response_data.update(phase3_response_metadata)
         
         # Test JSON serialization before returning
         import json
