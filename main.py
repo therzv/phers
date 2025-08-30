@@ -1,17 +1,21 @@
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from core import initialize_data_folder, update_question_replacements
 from routes import router
 
+app = FastAPI(
+    title="PHERS - Personal Data Chat System",
+    description="6-Step Flow: Upload → Profile → AI Clean → Index → Chat → Results",
+    version="2.0.0"
+)
 
-app = FastAPI(title="HR-Data Chat (Simple)")
 app.mount("/static", StaticFiles(directory="static", html=True), name="static")
 app.include_router(router)
 
-# initialize on import
-initialize_data_folder()
-update_question_replacements()
+# Print startup message
+print("🚀 PHERS 2.0 - Streamlined Data Chat System")
+print("📋 6-Step Flow: Upload → Profile → AI Clean → Index → Chat → Results")
+print("🔧 Tech Stack: FastAPI + MySQL + Redis + PandasAI + Phi-4")
 
 
 if __name__ == "__main__":
