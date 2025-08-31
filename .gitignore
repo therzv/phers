@@ -57,3 +57,13 @@ Thumbs.db
 
 # ChromaDB
 data/chroma/
+
+# PandasAI
+cache/
+*.cache
+pandasai.log
+
+# Test files
+test_*.csv
+test_*.xlsx
+test_*.json

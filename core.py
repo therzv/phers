@@ -13,6 +13,14 @@ import hashlib
 import json
 from pathlib import Path
 from dotenv import load_dotenv
+from pandasai import Agent
+from pandasai.llm.langchain import LangchainLLM
+try:
+    from langchain_ollama import OllamaLLM as Ollama
+except ImportError:
+    from langchain_community.llms import Ollama
+import warnings
+warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 # Load environment variables
 load_dotenv()
@@ -32,16 +40,23 @@ REDIS_CONFIG = {
     'db': int(os.getenv('REDIS_DB', 0))
 }
 
+OLLAMA_CONFIG = {
+    'base_url': os.getenv('OLLAMA_BASE_URL', 'http://127.0.0.1:11434'),
+    'model': os.getenv('OLLAMA_MODEL', 'phi4')
+}
+
 UPLOAD_FOLDER = Path(os.getenv('UPLOAD_FOLDER', './data'))
 UPLOAD_FOLDER.mkdir(exist_ok=True)
 
 # Global connections
 redis_client = None
 mysql_conn = None
+ollama_llm = None
+pandasai_agents = {}
 
 def initialize_connections():
-    """Initialize Redis and MySQL connections"""
-    global redis_client, mysql_conn
+    """Initialize Redis, MySQL, and Ollama connections"""
+    global redis_client, mysql_conn, ollama_llm
     
     try:
         redis_client = redis.Redis(**REDIS_CONFIG, decode_responses=True)
@@ -55,6 +70,19 @@ def initialize_connections():
         print("✅ MySQL connected")
     except Exception as e:
         print(f"❌ MySQL connection failed: {e}")
+        
+    try:
+        # Create Ollama instance through Langchain
+        ollama_instance = Ollama(
+            base_url=OLLAMA_CONFIG['base_url'],
+            model=OLLAMA_CONFIG['model']
+        )
+        # Wrap it in PandasAI's LangchainLLM
+        ollama_llm = LangchainLLM(ollama_instance)
+        print(f"✅ Ollama connected: {OLLAMA_CONFIG['model']}")
+    except Exception as e:
+        print(f"❌ Ollama connection failed: {e}")
+        ollama_llm = None
 
 def get_dataset_id(filename: str) -> str:
     """Generate unique dataset ID from filename"""
@@ -192,6 +220,12 @@ class DataCleaner:
                 sample = df.head(10).to_dict('records')
                 redis_client.set(f"dataset:{dataset_id}:sample", json.dumps(sample, default=str))
                 
+                # If MySQL is not available, store full DataFrame in Redis as backup
+                if not mysql_conn:
+                    df_json = df.to_json(orient='records')
+                    redis_client.set(f"dataset:{dataset_id}:dataframe", df_json)
+                    print(f"✅ DataFrame stored in Redis as fallback: {dataset_id}")
+                
                 print(f"✅ Data indexed in Redis: {dataset_id}")
             
             # Store full data in MySQL for persistence
@@ -235,6 +269,43 @@ class DataCleaner:
                 
         except Exception as e:
             print(f"❌ Indexing failed: {e}")
+    
+    @staticmethod
+    def get_dataset_dataframe(dataset_id: str) -> Optional[pd.DataFrame]:
+        """Retrieve dataset from MySQL or Redis as DataFrame"""
+        try:
+            # Try MySQL first
+            if mysql_conn:
+                table_name = f"dataset_{dataset_id}"
+                
+                # Check if table exists
+                cursor = mysql_conn.cursor()
+                cursor.execute(f"SHOW TABLES LIKE '{table_name}'")
+                if cursor.fetchone():
+                    # Get data from MySQL
+                    query = f"SELECT * FROM `{table_name}`"
+                    df = pd.read_sql(query, mysql_conn)
+                    
+                    # Remove the auto-generated id column if it exists
+                    if 'id' in df.columns:
+                        df = df.drop('id', axis=1)
+                        
+                    print(f"✅ Retrieved dataset from MySQL: {dataset_id}")
+                    return df
+            
+            # Fallback to Redis if MySQL unavailable or data not found
+            if redis_client:
+                df_json = redis_client.get(f"dataset:{dataset_id}:dataframe")
+                if df_json:
+                    df = pd.read_json(df_json, orient='records')
+                    print(f"✅ Retrieved dataset from Redis: {dataset_id}")
+                    return df
+                    
+            return None
+            
+        except Exception as e:
+            print(f"❌ Failed to retrieve dataset {dataset_id}: {e}")
+            return None
 
 class ChatSession:
     """Step 5: Manage natural language chat sessions"""
@@ -281,42 +352,131 @@ class NLProcessor:
     """Step 6: Convert natural language to code and return conversational results"""
     
     @staticmethod
+    def get_or_create_agent(dataset_id: str) -> Optional[Agent]:
+        """Get or create PandasAI agent for dataset"""
+        global pandasai_agents
+        
+        if dataset_id in pandasai_agents:
+            return pandasai_agents[dataset_id]
+            
+        if not ollama_llm:
+            print("❌ Ollama LLM not available")
+            return None
+            
+        # Get dataset as DataFrame
+        df = DataCleaner.get_dataset_dataframe(dataset_id)
+        if df is None:
+            print(f"❌ Could not retrieve dataset: {dataset_id}")
+            return None
+            
+        try:
+            # Create PandasAI agent with Ollama LLM
+            agent = Agent(
+                dfs=[df],
+                config={
+                    "llm": ollama_llm,
+                    "conversational": True,
+                    "verbose": True,
+                    "enable_cache": True
+                }
+            )
+            
+            pandasai_agents[dataset_id] = agent
+            print(f"✅ Created PandasAI agent for dataset: {dataset_id}")
+            return agent
+            
+        except Exception as e:
+            print(f"❌ Failed to create PandasAI agent: {e}")
+            return None
+    
+    @staticmethod
     def process_question(dataset_id: str, question: str) -> Dict[str, Any]:
         """Process natural language question using PandasAI + Phi-4"""
         
         try:
-            # Get dataset metadata
+            # Get dataset metadata first for fallback info
+            metadata = None
             if redis_client:
                 metadata_str = redis_client.get(f"dataset:{dataset_id}:metadata")
-                if not metadata_str:
+                if metadata_str:
+                    metadata = json.loads(metadata_str)
+                else:
                     return {"error": "Dataset not found", "success": False}
+            
+            # Get or create PandasAI agent
+            agent = NLProcessor.get_or_create_agent(dataset_id)
+            
+            if not agent:
+                # Fallback to basic response if PandasAI fails
+                return {
+                    "success": True,
+                    "question": question,
+                    "answer": f"I understand you're asking: '{question}'. However, I'm having trouble processing this with AI right now. I have access to a dataset with {len(metadata['columns']) if metadata else 0} columns: {', '.join(metadata['columns'][:5]) if metadata else 'unknown'}{'...' if metadata and len(metadata['columns']) > 5 else ''}.",
+                    "data": {},
+                    "explanation": "PandasAI agent not available - fallback response",
+                    "dataset_info": {
+                        "columns": metadata['columns'] if metadata else [],
+                        "shape": metadata['shape'] if metadata else [0, 0]
+                    }
+                }
+            
+            # Process question with PandasAI
+            try:
+                print(f"🤖 Processing question with PandasAI: {question}")
+                result = agent.chat(question)
                 
-                metadata = json.loads(metadata_str)
-                
-                # For now, return a structured response
-                # TODO: Integrate PandasAI + Phi-4 here
+                # Format the response
                 response = {
                     "success": True,
                     "question": question,
-                    "answer": f"I understand you're asking: '{question}'. I have access to a dataset with {len(metadata['columns'])} columns: {', '.join(metadata['columns'][:5])}{'...' if len(metadata['columns']) > 5 else ''}. Let me analyze this for you.",
+                    "answer": str(result) if result else "I couldn't generate a response for that question.",
                     "data": {},
-                    "explanation": "This is a conversational response from PHERS AI system.",
+                    "explanation": f"Processed using PandasAI with {OLLAMA_CONFIG['model']} model",
                     "dataset_info": {
-                        "columns": metadata['columns'],
-                        "shape": metadata['shape']
+                        "columns": metadata['columns'] if metadata else [],
+                        "shape": metadata['shape'] if metadata else [0, 0]
                     }
                 }
                 
+                # If result includes data visualization or tables, try to extract it
+                if hasattr(agent, 'last_result') and agent.last_result is not None:
+                    try:
+                        # Try to get any data that was computed
+                        if hasattr(agent.last_result, 'to_dict'):
+                            response["data"] = {"preview": agent.last_result.to_dict('records')[:10]}
+                        elif isinstance(agent.last_result, (list, dict)):
+                            response["data"] = {"result": agent.last_result}
+                    except:
+                        pass  # Ignore data extraction errors
+                
+                print(f"✅ Successfully processed question with PandasAI")
                 return response
                 
+            except Exception as ai_error:
+                print(f"❌ PandasAI processing failed: {ai_error}")
+                
+                # Fallback response with error info
+                return {
+                    "success": False,
+                    "question": question,
+                    "answer": f"I encountered an error while processing your question: {str(ai_error)}. Please try rephrasing your question or check if your data is properly formatted.",
+                    "data": {},
+                    "explanation": f"PandasAI error: {str(ai_error)}",
+                    "error": str(ai_error),
+                    "dataset_info": {
+                        "columns": metadata['columns'] if metadata else [],
+                        "shape": metadata['shape'] if metadata else [0, 0]
+                    }
+                }
+                
         except Exception as e:
+            print(f"❌ System error in NLProcessor: {e}")
             return {
                 "success": False,
                 "error": str(e),
-                "question": question
+                "question": question,
+                "answer": f"I encountered a system error: {str(e)}. Please try again later."
             }
-        
-        return {"error": "Redis not available", "success": False}
 
 # Initialize connections on import
 initialize_connections()
