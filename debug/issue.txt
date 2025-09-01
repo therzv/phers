@@ -1,0 +1,151 @@
+Issue:
+
+
+1)  when upload:
+    ✅ Data indexed in Redis: fc7e594f 
+    ❌ Indexing failed: 1054 (42S22): Unknown column 'nan' in 'VALUES'
+
+
+
+2) when delete data from UI got this: 
+   Error on pop up: Delete request failed: SyntaxError: Unexpected token 'I', "Internal S"... is not valid JSON
+   Error on backend: NameError: name 'redis_client' is not defined
+
+
+
+3)
+    ### QUERY
+    tell me about albert wirz? give all the things you know
+    
+    Variable `dfs: list[pd.DataFrame]` is already declared.
+    
+    At the end, declare "result" variable as a dictionary of type and value.
+    
+    If you are asked to plot a chart, use "matplotlib" for charts, save as png.
+    
+    
+    Generate python code and return full updated code:
+    
+    2025-09-01 00:42:45 [INFO] Code generated:
+                ```
+                # TODO: import the required dependencies
+    import pandas as pd
+    
+    # Initialize an empty list to hold results related to Albert Wirz
+    albert_wirz_info = []
+    
+    # Iterate through each DataFrame in the list 'dfs'
+    for df in dfs:
+        # Search for rows where Name contains "Albert Wirz"
+        wirz_rows = df[df['Name'].str.contains("Albert Wirz", case=False, na=False)]
+    
+        # If any rows are found, extract relevant information
+        if not wirz_rows.empty:
+            albert_wirz_info.extend(wirz_rows.to_dict('records'))
+    
+    # Check if we have found any information on Albert Wirz
+    if albert_wirz_info:
+        result = {
+            "type": "dataframe",
+            "value": pd.DataFrame(albert_wirz_info)
+        }
+    else:
+        # If no records were found, return a message stating so
+        result = {
+            "type": "string",
+            "value": "No information found about Albert Wirz."
+        }
+    
+    # Declare the result variable as required
+    result
+                ```
+    
+    2025-09-01 00:42:45 [INFO] Executing Step 4: CachePopulation
+    2025-09-01 00:42:45 [INFO] Executing Step 5: CodeCleaning
+    2025-09-01 00:42:45 [INFO]
+    Code running:
+    ```
+    albert_wirz_info = []
+    for df in dfs:
+        wirz_rows = df[df['Name'].str.contains('Albert Wirz', case=False, na=False)]
+        if not wirz_rows.empty:
+            albert_wirz_info.extend(wirz_rows.to_dict('records'))
+    if albert_wirz_info:
+        result = {'type': 'dataframe', 'value': pd.DataFrame(albert_wirz_info)}
+    else:
+        result = {'type': 'string', 'value': 'No information found about Albert Wirz.'}
+    result
+            ```
+    2025-09-01 00:42:45 [INFO] Executing Step 6: CodeExecution
+    2025-09-01 00:42:45 [INFO] Executing Step 7: ResultValidation
+    2025-09-01 00:42:45 [INFO] Answer: {'type': 'string', 'value': 'No information found about Albert Wirz.'}
+    2025-09-01 00:42:45 [INFO] Executing Step 8: ResultParsing
+    ✅ Successfully processed question with PandasAI
+
+
+4)
+
+    ### QUERY
+     how many total passenger ?
+    
+    Variable `dfs: list[pd.DataFrame]` is already declared.
+    
+    At the end, declare "result" variable as a dictionary of type and value.
+    
+    If you are asked to plot a chart, use "matplotlib" for charts, save as png.
+    
+    
+    Generate python code and return full updated code:
+    
+    2025-09-01 00:49:22 [INFO] Code generated:
+                ```
+                # TODO: import the required dependencies
+    import pandas as pd
+    
+    # Function to calculate total number of passengers
+    def total_passengers(dfs):
+        # Initialize a counter for total passengers
+        total_count = 0
+    
+        # Iterate over each DataFrame in the list
+        for df in dfs:
+            # Add the number of rows (passengers) in the current DataFrame to the total count
+            total_count += len(df)
+    
+        return total_count
+    
+    # Calculate total number of passengers using the function
+    total_passenger_count = total_passengers(dfs)
+    
+    # Declare result variable as a dictionary with "type" and "value"
+    result = {
+        "type": "number",
+        "value": total_passenger_count
+    }
+    
+    # Print result for verification (can be removed in production)
+    print(result)
+                ```
+    
+    2025-09-01 00:49:22 [INFO] Executing Step 4: CachePopulation
+    2025-09-01 00:49:22 [INFO] Executing Step 5: CodeCleaning
+    2025-09-01 00:49:22 [INFO]
+    Code running:
+    ```
+    def total_passengers(dfs):
+        total_count = 0
+        for df in dfs:
+            total_count += len(df)
+        return total_count
+    
+    
+    total_passenger_count = total_passengers(dfs)
+    result = {'type': 'number', 'value': total_passenger_count}
+    print(result)
+            ```
+    2025-09-01 00:49:22 [INFO] Executing Step 6: CodeExecution
+    {'type': 'number', 'value': 0}
+    2025-09-01 00:49:22 [INFO] Executing Step 7: ResultValidation
+    2025-09-01 00:49:22 [INFO] Answer: {'type': 'number', 'value': 0}
+    2025-09-01 00:49:22 [INFO] Executing Step 8: ResultParsing
+    ✅ Successfully processed question with PandasAI

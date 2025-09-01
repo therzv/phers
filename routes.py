@@ -12,7 +12,7 @@ from typing import Dict, Any
 
 from core import (
     DataProfiler, AIDataCleaner, DataCleaner, ChatSession, NLProcessor,
-    get_dataset_id, UPLOAD_FOLDER
+    get_dataset_id, UPLOAD_FOLDER, redis_client
 )
 
 router = APIRouter()

@@ -254,9 +254,12 @@ class DataCleaner:
                 """
                 cursor.execute(create_sql)
                 
-                # Insert data
+                # Insert data - handle NaN values for MySQL compatibility
                 df_clean_cols = df.copy()
                 df_clean_cols.columns = [col.replace(' ', '_').replace('-', '_') for col in df_clean_cols.columns]
+                
+                # Replace NaN values with None (NULL in MySQL)
+                df_clean_cols = df_clean_cols.where(pd.notnull(df_clean_cols), None)
                 
                 placeholders = ', '.join(['%s'] * len(df_clean_cols.columns))
                 insert_sql = f"INSERT INTO `{table_name}` ({', '.join([f'`{col}`' for col in df_clean_cols.columns])}) VALUES ({placeholders})"
@@ -272,9 +275,23 @@ class DataCleaner:
     
     @staticmethod
     def get_dataset_dataframe(dataset_id: str) -> Optional[pd.DataFrame]:
-        """Retrieve dataset from MySQL or Redis as DataFrame"""
+        """Retrieve dataset from MySQL, Redis, or memory as DataFrame"""
         try:
-            # Try MySQL first
+            # Import here to avoid circular import
+            from routes import ACTIVE_DATASETS
+            
+            # First try in-memory cleaned dataframe (fastest and most reliable)
+            if dataset_id in ACTIVE_DATASETS:
+                if 'clean_dataframe' in ACTIVE_DATASETS[dataset_id]:
+                    df = ACTIVE_DATASETS[dataset_id]['clean_dataframe']
+                    print(f"✅ Retrieved dataset from memory: {dataset_id} ({df.shape[0]} rows)")
+                    return df
+                elif 'dataframe' in ACTIVE_DATASETS[dataset_id]:
+                    df = ACTIVE_DATASETS[dataset_id]['dataframe']
+                    print(f"✅ Retrieved dataset from memory (original): {dataset_id} ({df.shape[0]} rows)")
+                    return df
+            
+            # Try MySQL second
             if mysql_conn:
                 table_name = f"dataset_{dataset_id}"
                 
@@ -290,16 +307,21 @@ class DataCleaner:
                     if 'id' in df.columns:
                         df = df.drop('id', axis=1)
                         
-                    print(f"✅ Retrieved dataset from MySQL: {dataset_id}")
+                    print(f"✅ Retrieved dataset from MySQL: {dataset_id} ({df.shape[0]} rows)")
                     return df
             
             # Fallback to Redis if MySQL unavailable or data not found
             if redis_client:
                 df_json = redis_client.get(f"dataset:{dataset_id}:dataframe")
                 if df_json:
-                    df = pd.read_json(df_json, orient='records')
-                    print(f"✅ Retrieved dataset from Redis: {dataset_id}")
-                    return df
+                    try:
+                        import io
+                        df = pd.read_json(io.StringIO(df_json), orient='records')
+                        print(f"✅ Retrieved dataset from Redis: {dataset_id} ({df.shape[0]} rows)")
+                        return df
+                    except Exception as json_error:
+                        print(f"❌ Failed to deserialize Redis JSON: {json_error}")
+                        return None
                     
             return None
             
@@ -382,7 +404,8 @@ class NLProcessor:
             )
             
             pandasai_agents[dataset_id] = agent
-            print(f"✅ Created PandasAI agent for dataset: {dataset_id}")
+            print(f"✅ Created PandasAI agent for dataset: {dataset_id} with {df.shape[0]} rows, {df.shape[1]} columns")
+            print(f"   Columns: {list(df.columns)}")
             return agent
             
         except Exception as e:
